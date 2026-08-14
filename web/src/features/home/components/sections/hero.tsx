@@ -49,10 +49,10 @@ export function Hero(props: HeroProps) {
   const { t } = useTranslation()
   const { status } = useStatus()
   const docsUrl =
-    (status?.docs_link as string | undefined) || 'https://docs.newapi.pro'
+    (status?.docs_link as string | undefined) || '/docs/'
 
   const renderDocsButton = () => {
-    const isExternal = docsUrl.startsWith('http')
+    const isExternal = /^(https?:|file:|\/)/.test(docsUrl)
     if (isExternal) {
       return (
         <Button

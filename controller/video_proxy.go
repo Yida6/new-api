@@ -142,8 +142,9 @@ func VideoProxy(c *gin.Context) {
 		validateErr = common.ValidateURLWithFetchSetting(videoURL, fetchSetting.EnableSSRFProtection, fetchSetting.AllowPrivateIp, fetchSetting.DomainFilterMode, fetchSetting.IpFilterMode, fetchSetting.DomainList, fetchSetting.IpList, fetchSetting.AllowedPorts, fetchSetting.ApplyIPFilterForDomain)
 	}
 	if validateErr != nil {
+		// 不向客户端回显校验错误原文（其中包含上游资源 URL），仅记录服务端日志。
 		logger.LogError(c.Request.Context(), fmt.Sprintf("Video URL blocked for task %s: %v", taskID, validateErr))
-		videoProxyError(c, http.StatusForbidden, "server_error", fmt.Sprintf("request blocked: %v", validateErr))
+		videoProxyError(c, http.StatusForbidden, "server_error", "request_blocked_by_server_policy")
 		return
 	}
 
@@ -169,17 +170,39 @@ func VideoProxy(c *gin.Context) {
 		return
 	}
 
-	for key, values := range resp.Header {
-		for _, value := range values {
-			c.Writer.Header().Add(key, value)
+	// 仅透传内容类响应头；不转发 Location / Content-Location 等可能携带
+	// 上游地址的重定向头或自定义头（防止客户端绕过本地鉴权直接访问上游，
+	// 或从响应头中获取可直接拼接的上游资源 URL）。
+	for _, key := range videoProxyAllowedResponseHeaders {
+		if values, ok := resp.Header[http.CanonicalHeaderKey(key)]; ok {
+			for _, value := range values {
+				c.Writer.Header().Add(key, value)
+			}
 		}
 	}
 
-	c.Writer.Header().Set("Cache-Control", "public, max-age=86400")
+	// 视频内容是经鉴权与所有权校验的私有用户资源：任何缓存都无法按登录账号
+	// 隔离——private 只排除共享缓存，同一浏览器内的用户私有缓存仍可能在
+	// 用户 A 退出后、用户 B 复用相同 URL 时直接命中，从而绕过服务端的所有权
+	// 校验。因此禁止一切缓存（no-store），保证每次访问都执行鉴权与校验。
+	c.Writer.Header().Set("Cache-Control", "private, no-store")
 	c.Writer.WriteHeader(resp.StatusCode)
 	if _, err = io.Copy(c.Writer, resp.Body); err != nil {
 		logger.LogError(c.Request.Context(), fmt.Sprintf("Failed to stream video content: %s", err.Error()))
 	}
+}
+
+// videoProxyAllowedResponseHeaders 是代理转发响应时允许透传的响应头白名单。
+// 仅包含内容元数据类字段，排除 Location、Content-Location、Set-Cookie 及
+// 上游自定义头，避免泄露上游地址或状态。
+var videoProxyAllowedResponseHeaders = []string{
+	"Content-Type",
+	"Content-Length",
+	"Content-Range",
+	"Accept-Ranges",
+	"Content-Disposition",
+	"ETag",
+	"Last-Modified",
 }
 
 func writeVideoDataURL(c *gin.Context, dataURL string) error {
@@ -209,7 +232,9 @@ func writeVideoDataURL(c *gin.Context, dataURL string) error {
 	}
 
 	c.Writer.Header().Set("Content-Type", mimeType)
-	c.Writer.Header().Set("Cache-Control", "public, max-age=86400")
+	// data URL 路径同样返回私有用户资源：与上游代理路径一致，禁止一切缓存
+	// （no-store），确保每次访问都执行鉴权与所有权校验。
+	c.Writer.Header().Set("Cache-Control", "private, no-store")
 	c.Writer.WriteHeader(http.StatusOK)
 	_, err = c.Writer.Write(videoBytes)
 	return err

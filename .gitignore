@@ -20,6 +20,7 @@ tiktoken_cache
 .gocache
 .gomodcache/
 .cache
+.air-tmp/
 plans
 .claude
 .cursor

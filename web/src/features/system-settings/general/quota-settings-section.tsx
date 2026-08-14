@@ -296,7 +296,7 @@ export function QuotaSettingsSection({
                     />
                   </FormControl>
                   <FormDescription>
-                    {t('Link to your documentation site')}
+                    {t('Link to your documentation site, supports http(s) and local file:// paths')}
                   </FormDescription>
                   <FormMessage />
                 </FormItem>

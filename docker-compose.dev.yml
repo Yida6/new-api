@@ -1,11 +1,12 @@
-# Frontend Development - Backend built from local source
+# Frontend and backend development with automatic source reload
 #
 # Usage:
 #   1. docker compose -f docker-compose.dev.yml up -d
 #   2. make dev-web
 #   3. Open http://localhost:5173 (Rsbuild dev server, API auto-proxied to :3000)
 #
-# Rebuild backend after Go code changes:
+# Go source changes are rebuilt automatically by Air inside the container.
+# Rebuild the development image only after changing Dockerfile.dev:
 #   docker compose -f docker-compose.dev.yml up -d --build new-api
 #
 # Stop:
@@ -24,13 +25,20 @@ services:
     restart: unless-stopped
     ports:
       - "3000:3000"
+    working_dir: /app
     volumes:
+      - .:/app
       - dev_data:/data
+      - dev_go_mod:/go/pkg/mod
+      - dev_go_build:/root/.cache/go-build
     environment:
       - SQL_DSN=postgresql://root:123456@postgres:5432/new-api
       - REDIS_CONN_STRING=redis://redis
       - TZ=Asia/Shanghai
       - BATCH_UPDATE_ENABLED=true
+      # 0 disables the guardrail. Set production values explicitly.
+      - SEEDANCE_DAILY_COST_ALERT_USD=0
+      - SEEDANCE_DAILY_COST_LIMIT_USD=0
       # Local HTTP dev mode: keep Secure=false and leave TRUSTED_URL unset. This disables the refresh/logout OriginGuard so the :5173 -> :3000 dev proxy works.
       - SESSION_COOKIE_SECURE=false
       # For HTTPS only: set Secure=true and list every exact trusted HTTPS browser Origin. This does not configure relay CORS.
@@ -72,6 +80,8 @@ services:
 volumes:
   dev_data:
   dev_pg_data:
+  dev_go_mod:
+  dev_go_build:
 
 networks:
   dev-network:

@@ -38,14 +38,14 @@ func OpenBrowser(url string) {
 		err = exec.Command("open", url).Start()
 	}
 	if err != nil {
-		log.Println(err)
+		log.Println(RedactCredentials(err.Error()))
 	}
 }
 
 func GetIp() (ip string) {
 	ips, err := net.InterfaceAddrs()
 	if err != nil {
-		log.Println(err)
+		log.Println(RedactCredentials(err.Error()))
 		return ip
 	}
 
@@ -73,7 +73,7 @@ func GetNetworkIps() []string {
 	var networkIps []string
 	ips, err := net.InterfaceAddrs()
 	if err != nil {
-		log.Println(err)
+		log.Println(RedactCredentials(err.Error()))
 		return networkIps
 	}
 

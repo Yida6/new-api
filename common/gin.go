@@ -199,14 +199,16 @@ func GetContextKeyType[T any](c *gin.Context, key constant.ContextKey) (T, bool)
 func ApiError(c *gin.Context, err error) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": false,
-		"message": err.Error(),
+		// 通用业务错误出口统一脱敏凭据类值（方舟 Endpoint ID / API Key /
+		// Bearer Token），防止数据库/上游错误文本携带的凭据透传给客户端。
+		"message": RedactCredentials(err.Error()),
 	})
 }
 
 func ApiErrorMsg(c *gin.Context, msg string) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": false,
-		"message": msg,
+		"message": RedactCredentials(msg),
 	})
 }
 

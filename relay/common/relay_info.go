@@ -857,6 +857,43 @@ type TaskRelayInfo struct {
 	// 供 DoResponse 在返回给客户端时使用（避免暴露上游真实 ID）。
 	PublicTaskID string
 
+	// IdempotencyKey 是本次"逻辑上的新建任务"的本地幂等键（UUID v4）。
+	// 在进入重试循环之前生成一次，同一次任务的自动重试（含超时重试、渠道切换重试）
+	// 必须复用同一个键，绝不能每次重试重新生成；用户发起全新任务时由新的
+	// RelayInfo 自然生成新键。配合 TaskPrivateData.IdempotencyKey 随任务持久化，
+	// 用于提交锁、状态关联与审计。
+	//
+	// 重要：Seedance（火山方舟）服务端未声明支持 Idempotency-Key，因此本键
+	// 仅保证"客户端记录一致"，不提供服务端幂等；结果未知的 POST 一律停止
+	// 自动重试并标记 outcome_unknown（见 TaskSubmitOutcome）。
+	IdempotencyKey string
+
+	// ClientRequestID 是本次创建请求的 X-Client-Request-Id 请求头值（UUID v4）。
+	// 每个逻辑创建任务生成一次并在重试中复用，仅用于日志与问题排查（方舟
+	// 文档仅将其用于串联客户端/服务端日志），不具备幂等语义，代码与注释不得
+	// 将其描述为幂等键。
+	ClientRequestID string
+
+	// SubmitOutcome 记录最近一次提交尝试的结果分类，由 RelayTaskSubmit 在
+	// 返回前设置，控制器据此决定是否安全重试。
+	SubmitOutcome TaskSubmitOutcome
+
+	// RecoveryParentID 标识本次提交所属的人工恢复重试链（非零时表示用户
+	// 在恢复入口确认"承担重复创建风险"后发起的新逻辑尝试）。
+	RecoveryParentID int64
+
+	// ConfirmDuplicateRisk 为 true 表示用户已显式确认"可能产生重复任务"，
+	// 仅在恢复入口的人工重试路径上设置。
+	ConfirmDuplicateRisk bool
+
+	// SeedanceCost* tracks the site-wide daily cost reservation for this
+	// logical submit across safe automatic retries.
+	SeedanceCostPeriod string
+	SeedanceCostMicros int64
+	// SeedanceCostCommitted becomes true only when a Seedance submit definitely
+	// succeeded or its outcome is unknown (and may therefore have incurred cost).
+	SeedanceCostCommitted bool
+
 	ConsumeQuota bool
 
 	// LockedChannel holds the full channel object when the request is bound to

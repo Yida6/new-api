@@ -110,7 +110,7 @@ func GetAPIVersion(c *gin.Context) string {
 func createTaskError(err error, code string, statusCode int, localError bool) *dto.TaskError {
 	return &dto.TaskError{
 		Code:       code,
-		Message:    err.Error(),
+		Message:    common.RedactCredentials(err.Error()),
 		StatusCode: statusCode,
 		LocalError: localError,
 		Error:      err,

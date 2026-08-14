@@ -1,13 +1,16 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 const (
@@ -33,6 +36,24 @@ func PreConsumeBilling(c *gin.Context, preConsumedQuota int, relayInfo *relaycom
 			http.StatusBadRequest,
 			types.ErrOptionWithSkipRetry(),
 		)
+	}
+	// 欠款冻结守卫：用户因 Seedance 任务差额欠款被自动冻结时，阻止其继续创建
+	// 付费任务（DB 直查，避免缓存窗口误放行；冻结状态由欠款闭环维护，清偿后
+	// 自动解除，且与管理员手工禁用相互独立）。
+	if relayInfo != nil && relayInfo.UserId > 0 {
+		frozen, err := model.GetUserDebtFrozen(relayInfo.UserId)
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return types.NewError(err, types.ErrorCodeQueryDataError, types.ErrOptionWithSkipRetry())
+		}
+		if frozen {
+			return types.NewErrorWithStatusCode(
+				fmt.Errorf("用户因任务差额欠款被冻结，请先清偿欠款后再试"),
+				types.ErrorCodeDebtFrozen,
+				http.StatusForbidden,
+				types.ErrOptionWithSkipRetry(),
+				types.ErrOptionWithNoRecordErrorLog(),
+			)
+		}
 	}
 	session, apiErr := NewBillingSession(c, relayInfo, preConsumedQuota)
 	if apiErr != nil {

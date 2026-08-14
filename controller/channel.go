@@ -2098,7 +2098,7 @@ func OllamaPullModelStream(c *gin.Context) {
 
 	if err != nil {
 		errorData, _ := json.Marshal(gin.H{
-			"error": err.Error(),
+			"error": common.RedactCredentials(err.Error()),
 		})
 		fmt.Fprintf(c.Writer, "data: %s\n\n", string(errorData))
 	} else {

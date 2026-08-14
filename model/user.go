@@ -110,6 +110,12 @@ type User struct {
 	LastLoginAt      int64                      `json:"last_login_at" gorm:"default:0;column:last_login_at"`
 	AuthVersion      int64                      `json:"-" gorm:"type:bigint;not null;default:1;column:auth_version"`
 	AdminPermissions map[string]map[string]bool `json:"admin_permissions,omitempty" gorm:"-:all"`
+	// DebtFrozen 标记用户是否因"任务差额欠款"被自动冻结（区别于管理员手工禁用
+	// Status=2）。欠款冻结只阻止继续创建付费任务；还款清空全部未清欠款后才解除，
+	// 解除操作不得触碰管理员手工禁用状态（见 model/debt.go 的 UnfreezeUserDebt）。
+	DebtFrozen      bool   `json:"debt_frozen" gorm:"column:debt_frozen;default:false"`
+	DebtFrozenAt    int64  `json:"debt_frozen_at" gorm:"column:debt_frozen_at;default:0"`
+	DebtFrozenReason string `json:"debt_frozen_reason" gorm:"column:debt_frozen_reason;type:varchar(255);default:''"`
 }
 
 func (user *User) ToBaseUser() *UserBase {
@@ -188,6 +194,30 @@ func UpdateUserSetting(userId int, setting dto.UserSetting) error {
 		return err
 	}
 	return updateUserSettingCache(userId, settingValue)
+}
+
+// userBindColumns 允许通过 UpdateUserBindColumn 更新的第三方账号绑定列白名单。
+// 列名只可能来自代码内部的 provider 实现，白名单是防御纵深，不依赖调用方自律。
+var userBindColumns = map[string]bool{
+	"github_id":   true,
+	"discord_id":  true,
+	"oidc_id":     true,
+	"linux_do_id": true,
+	"wechat_id":   true,
+}
+
+// UpdateUserBindColumn 第三方账号绑定字段的专用更新。
+// 绑定操作必须只写绑定列：若改为“读取完整用户 → 改一个字段 → 整体更新”，
+// 读快照期间并发发生的封禁、降权或分组变更会被旧快照覆盖恢复。
+// 角色、状态、分组只允许通过各自带锁/CAS 的专用方法修改。
+func UpdateUserBindColumn(userId int, column string, value string) error {
+	if userId <= 0 {
+		return errors.New("id 为空！")
+	}
+	if !userBindColumns[column] {
+		return fmt.Errorf("invalid user bind column: %s", column)
+	}
+	return DB.Model(&User{}).Where("id = ?", userId).Update(column, value).Error
 }
 
 // 根据用户角色生成默认的边栏配置
@@ -523,7 +553,7 @@ func inviteUser(inviterId int) error {
 func (user *User) TransferAffQuotaToQuota(quota int) error {
 	// 检查quota是否小于最小额度
 	if float64(quota) < common.QuotaPerUnit {
-		return fmt.Errorf("转移额度最小为%s！", logger.LogQuota(int(common.QuotaPerUnit)))
+		return fmt.Errorf("转移额度最小为%s！", logger.LogQuota(common.QuotaFromFloat(common.QuotaPerUnit)))
 	}
 
 	// 开始数据库事务
@@ -1156,24 +1186,9 @@ func ValidateAccessToken(token string) (*User, error) {
 
 // GetUserQuota gets quota from Redis first, falls back to DB if needed
 func GetUserQuota(id int, fromDB bool) (quota int, err error) {
-	defer func() {
-		// Update Redis cache asynchronously on successful DB read
-		if shouldUpdateRedis(fromDB, err) {
-			gopool.Go(func() {
-				if err := updateUserQuotaCache(id, quota); err != nil {
-					common.SysLog("failed to update user quota cache: " + err.Error())
-				}
-			})
-		}
-	}()
 	if !fromDB && common.RedisEnabled {
-		quota, err := getUserQuotaCache(id)
-		if err == nil {
-			return quota, nil
-		}
-		// Don't return error - fall through to DB
+		return getUserQuotaCache(id)
 	}
-	fromDB = true
 	err = DB.Model(&User{}).Where("id = ?", id).Select("quota").Find(&quota).Error
 	if err != nil {
 		return 0, err
@@ -1344,6 +1359,44 @@ func UpdateUserUsedQuotaAndRequestCount(id int, quota int) {
 	updateUserUsedQuotaAndRequestCount(id, quota, 1)
 }
 
+// UpdateUserUsedQuota 仅调整用户的累计消耗 used_quota（支持正负差额），不修改 request_count。
+// 用于异步任务的差额结算与失败退款时同步累计消耗，保证"消耗 = 消费日志 - 退款日志"
+// 且"一次任务始终只计一次请求"。
+// 返回是否执行了冲减；当退款方向（quota<0）且非批量模式下 used_quota 不足以冲减时，
+// 视为数据异常（可能重复退款或历史数据错误），记录告警并跳过，避免把累计消耗冲成负数。
+// 批量模式下无法做原子守卫，负差额直接入队，由历史修复脚本兜底校验。
+func UpdateUserUsedQuota(id int, quota int) bool {
+	if quota == 0 {
+		return true
+	}
+	if !common.BatchUpdateEnabled && quota < 0 {
+		result := DB.Model(&User{}).Where("id = ? AND used_quota >= ?", id, -quota).
+			Update("used_quota", gorm.Expr("used_quota + ?", quota))
+		if result.Error != nil {
+			common.SysLog(fmt.Sprintf("failed to update user used quota: user_id=%d, delta=%d, error=%v", id, quota, result.Error))
+			return false
+		}
+		if result.RowsAffected != 1 {
+			common.SysError(fmt.Sprintf("used_quota 冲减守卫失败（可能重复退款或历史数据异常）：user_id=%d, refund=%d，已跳过冲减，请运行历史修复脚本对账", id, -quota))
+			return false
+		}
+		return true
+	}
+	if common.BatchUpdateEnabled {
+		addNewRecord(BatchUpdateTypeUsedQuota, id, quota)
+		return true
+	}
+	updateUserUsedQuotaAndRequestCount(id, quota, 0)
+	return true
+}
+
+// UpdateUserUsedQuotaAndRequestCountSync 同步（不走批量队列）累计 used_quota 与请求数。
+// 用于异步任务预扣：任务结算/退款需要在同一事务内读取 used_quota 做守卫，
+// 若预扣仍在批量队列中会导致读到旧值、误判守卫失败（详见 ApplyTaskQuotaDelta）。
+func UpdateUserUsedQuotaAndRequestCountSync(id int, quota int) {
+	updateUserUsedQuotaAndRequestCount(id, quota, 1)
+}
+
 func updateUserUsedQuotaAndRequestCount(id int, quota int, count int) {
 	err := DB.Model(&User{}).Where("id = ?", id).Updates(
 		map[string]interface{}{
@@ -1367,6 +1420,10 @@ func updateUserQuotaUsedQuotaAndRequestCount(id int, quota int, usedQuota int, r
 		return
 	}
 
+	// 说明：授权落账的扣减（TryReserveUserQuota → persistUserQuotaDelta）已改为
+	// 无论是否批量模式都直写带守卫，不再进入本批量队列；进入本队列的 quota 增量
+	// 只有加方向（充值/退款）与欠费模式的扣减（DecreaseUserQuota，允许余额为负），
+	// 均无需余额守卫，因此这里不做条件更新。
 	err := DB.Model(&User{}).Where("id = ?", id).Updates(
 		map[string]interface{}{
 			"quota":         gorm.Expr("quota + ?", quota),
@@ -1376,24 +1433,6 @@ func updateUserQuotaUsedQuotaAndRequestCount(id int, quota int, usedQuota int, r
 	).Error
 	if err != nil {
 		common.SysLog("failed to batch update user quota, used quota and request count: " + err.Error())
-	}
-}
-
-func updateUserUsedQuota(id int, quota int) {
-	err := DB.Model(&User{}).Where("id = ?", id).Updates(
-		map[string]interface{}{
-			"used_quota": gorm.Expr("used_quota + ?", quota),
-		},
-	).Error
-	if err != nil {
-		common.SysLog("failed to update user used quota: " + err.Error())
-	}
-}
-
-func updateUserRequestCount(id int, count int) {
-	err := DB.Model(&User{}).Where("id = ?", id).Update("request_count", gorm.Expr("request_count + ?", count)).Error
-	if err != nil {
-		common.SysLog("failed to update user request count: " + err.Error())
 	}
 }
 

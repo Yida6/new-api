@@ -1,0 +1,28 @@
+root = "."
+tmp_dir = ".air-tmp"
+
+[build]
+cmd = "mkdir -p web/dist && if [ ! -f web/dist/index.html ]; then echo '<!doctype html><html><head><title>dev</title></head><body>use frontend dev server</body></html>' > web/dist/index.html; fi && go build -ldflags \"-s -w -X 'github.com/QuantumNous/new-api/common.Version=dev'\" -o ./.air-tmp/new-api ."
+entrypoint = ["./.air-tmp/new-api"]
+include_ext = ["go", "yaml", "yml", "json"]
+include_file = ["VERSION", "go.mod", "go.sum"]
+exclude_dir = [".air-tmp", ".git", ".github", "data", "docs", "electron", "logs", "web"]
+exclude_regex = ["_test\\.go$"]
+exclude_unchanged = true
+follow_symlink = false
+poll = true
+poll_interval = 1000
+delay = 500
+stop_on_error = true
+send_interrupt = true
+kill_delay = "1s"
+
+[log]
+time = true
+main_only = false
+
+[color]
+main = "magenta"
+watcher = "cyan"
+build = "yellow"
+runner = "green"

@@ -36,6 +36,10 @@ type QuotaDataLogParams struct {
 	TokenID   int
 	ChannelID int
 	NodeName  string
+	// Adjustment 为 true 时表示一条计费调整记录（差额补扣/差额退款/全额退款）：
+	// 写入 quota_data 时 Count 固定为 0（不增加请求计数），Quota 可为负数。
+	// 用于保证"净消费 = 消费日志合计 - 退款日志合计"在看板趋势上成立。
+	Adjustment bool
 }
 
 func UpdateQuotaData() {
@@ -78,6 +82,11 @@ func logQuotaDataCache(quotaData *QuotaData) {
 func LogQuotaData(params QuotaDataLogParams) {
 	// 只精确到小时
 	createdAt := params.CreatedAt - (params.CreatedAt % 3600)
+	count := 1
+	if params.Adjustment {
+		// 差额/退款调整不增加请求计数
+		count = 0
+	}
 	quotaData := &QuotaData{
 		UserID:    params.UserID,
 		Username:  params.Username,
@@ -87,7 +96,7 @@ func LogQuotaData(params QuotaDataLogParams) {
 		TokenID:   params.TokenID,
 		ChannelID: params.ChannelID,
 		NodeName:  params.NodeName,
-		Count:     1,
+		Count:     count,
 		Quota:     params.Quota,
 		TokenUsed: params.TokenUsed,
 	}

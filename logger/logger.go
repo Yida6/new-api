@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -26,7 +27,9 @@ const (
 
 const maxLogCount = 1000000
 
-var logCount int
+// logCount 用原子操作维护：并发日志（如 Seedance 并发结算）下原有无锁递增
+// 会被 race detector 报告；计数只用于触发日志轮转，精度不敏感，原子化即可。
+var logCount atomic.Int64
 var setupLogLock sync.Mutex
 var setupLogWorking bool
 var currentLogPath string
@@ -102,6 +105,11 @@ func logHelper(ctx context.Context, level string, msg string) {
 		}
 	}
 	now := time.Now()
+	// 服务端日志出口统一脱敏凭据类值（方舟 Endpoint ID / API Key / Bearer
+	// Token / 凭据键值对）：上游响应体与错误体可能回显 Endpoint ID 或密钥，
+	// 任何日志（文件/控制台）都不得落盘未脱敏的凭据。URL/域名/IP 等其余信息
+	// 保留，管理员仍可据此排障。
+	msg = common.RedactCredentials(msg)
 	common.LogWriterMu.RLock()
 	writer := gin.DefaultErrorWriter
 	if level == loggerINFO {
@@ -109,9 +117,9 @@ func logHelper(ctx context.Context, level string, msg string) {
 	}
 	_, _ = fmt.Fprintf(writer, "[%s] %v | %s | %s \n", level, now.Format("2006/01/02 - 15:04:05"), id, msg)
 	common.LogWriterMu.RUnlock()
-	logCount++ // we don't need accurate count, so no lock here
-	if logCount > maxLogCount && !setupLogWorking {
-		logCount = 0
+	logCount.Add(1) // 原子计数，仅用于日志轮转触发（精度不敏感）
+	if logCount.Load() > maxLogCount && !setupLogWorking {
+		logCount.Store(0)
 		setupLogWorking = true
 		gopool.Go(func() {
 			SetupLogger()

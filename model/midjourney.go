@@ -23,6 +23,13 @@ type Midjourney struct {
 	Quota       int    `json:"quota"`
 	Buttons     string `json:"buttons"`
 	Properties  string `json:"properties"`
+	// ConsumeLogRecorded 记录提交时是否写入了消费日志（受 LogConsumeEnabled 影响）。
+	// 退款时据此决定是否写退款日志，避免开关在提交与退款之间切换导致日志口径不对称。
+	ConsumeLogRecorded bool `json:"consume_log_recorded" gorm:"column:consume_log_recorded;default:false"`
+	// BillingStatsFailed 标记提交时的累计统计写入失败（ApplyPreConsumeUsedQuota
+	// 失败）。此时仍创建任务行（上游已创建、资金已扣），但 used_quota/request_count
+	// 从未累加；失败退款时跳过累计消耗冲减，避免 used_quota >= refund 守卫永久卡死。
+	BillingStatsFailed bool `json:"-" gorm:"column:billing_stats_failed;default:false"`
 }
 
 // TaskQueryParams 用于包含所有搜索条件的结构体，可以根据需求添加更多字段

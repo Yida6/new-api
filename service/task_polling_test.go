@@ -3,8 +3,10 @@ package service
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -390,6 +392,8 @@ func TestUpdateSunoTasksStalePollsRefundExactlyOnce(t *testing.T) {
 		Status:  common.ChannelStatusEnabled,
 		BaseURL: &baseURL,
 	}).Error)
+	// 预置累计消耗：模拟"提交任务已预扣"的前置状态，使退款守卫（used_quota >= refund）通过
+	seedUsedQuota(t, userID, channelID, taskQuota)
 
 	task := makeTask(userID, channelID, taskQuota, tokenID, BillingSourceWallet, 0)
 	task.TaskID = publicTaskID
@@ -464,6 +468,9 @@ func TestSweepTimedOutTasksHonorsRefundRolloutBoundary(t *testing.T) {
 		modernTaskQuota = 1_200
 	)
 	seedUser(t, userID, initialQuota)
+	// 预置累计消耗：模拟"提交任务已预扣"的前置状态，使 modern 任务退款守卫
+	// （used_quota >= refund）通过（生产路径由 LogTaskConsumption 完成预扣）
+	seedUsedQuota(t, userID, 0, modernTaskQuota)
 
 	legacyTask := makeTask(userID, 0, legacyTaskQuota, 0, BillingSourceWallet, 0)
 	legacyTask.TaskID = "legacy_timeout_without_refund"
@@ -495,4 +502,250 @@ func TestSweepTimedOutTasksHonorsRefundRolloutBoundary(t *testing.T) {
 	assert.Contains(t, reloadedModern.FailReason, "任务超时")
 	assert.Equal(t, initialQuota+modernTaskQuota, getUserQuota(t, userID))
 	assert.Equal(t, int64(1), countLogs(t))
+}
+
+// ===========================================================================
+// 并发名额释放时机回归测试（Fix：计费失败回退非终态前不得提前释放名额）
+//
+// 旧实现：CAS 胜出转终态后立即 ReleaseTaskSlotIfSeedance，随后计费（退款/差额
+// 结算）失败回退非终态时名额已释放且 ConcurrencyReleased 已置位 → 任务重跑期间
+// 不再计入并发限制，最终成功时也无法再释放，计数失真。
+// 新实现：只有"终态确立且计费成功"才释放；计费失败回退非终态时名额继续占用。
+// ===========================================================================
+
+// wipeConcurrencySlots 清理所有并发名额行（truncate 不覆盖该表，避免跨测试污染）。
+func wipeConcurrencySlots(t *testing.T) {
+	t.Helper()
+	t.Cleanup(func() {
+		_ = model.DB.Exec("DELETE FROM task_concurrency_slots").Error
+	})
+}
+
+// sweepTimedOutTasks：退款失败 → 回退非终态且名额保留；补足累计消耗后再次
+// sweep → 终态确立且退款成功 → 释放名额。
+func TestSweepTimedOutTasks_RefundFailureKeepsConcurrencySlot(t *testing.T) {
+	truncate(t)
+	cleanupConcurrencyTestData(t)
+	wipeConcurrencySlots(t)
+
+	oldTimeout := constant.TaskTimeoutMinutes
+	constant.TaskTimeoutMinutes = 120
+	t.Cleanup(func() { constant.TaskTimeoutMinutes = oldTimeout })
+
+	const userID, preConsumed = 70, 1200
+	seedUser(t, userID, 5000)
+	// 不 seed used_quota → RefundTaskQuota 的累计消耗守卫失败
+
+	task := &model.Task{
+		TaskID:     "sweep_slot_task",
+		UserId:     userID,
+		Platform:   constant.TaskPlatform("54"),
+		Quota:      preConsumed,
+		Status:     model.TaskStatus(model.TaskStatusQueued),
+		Group:      "default",
+		Data:       json.RawMessage(`{}`),
+		SubmitTime: time.Now().Unix() - 3*3600,
+		CreatedAt:  time.Now().Unix(),
+		UpdatedAt:  time.Now().Unix(),
+		PrivateData: model.TaskPrivateData{
+			ConsumeLogRecorded: true,
+		},
+	}
+	// 与生产顺序一致：先预留名额，再创建任务行（预留时的存量补齐因此不会计入本任务）
+	ok, _, err := model.ReserveTaskConcurrencySlot(userID, 3)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.NoError(t, model.DB.Create(task).Error)
+
+	sweepTimedOutTasks(context.Background())
+
+	// 退款失败 → 回退非终态，名额必须保留
+	count, err := model.GetRunningCountForUser(userID)
+	require.NoError(t, err)
+	assert.Equal(t, 1, count, "退款失败回退非终态，名额不得释放")
+	var reloaded model.Task
+	require.NoError(t, model.DB.First(&reloaded, task.ID).Error)
+	assert.EqualValues(t, model.TaskStatusQueued, reloaded.Status, "退款失败应回退到非终态")
+	assert.False(t, reloaded.ConcurrencyReleased, "回退非终态后 ConcurrencyReleased 必须保持 false")
+	assert.Equal(t, preConsumed, reloaded.Quota)
+
+	// 补上累计消耗后再次 sweep：退款成功 + 终态确立 → 释放名额
+	seedUsedQuota(t, userID, 0, preConsumed)
+	sweepTimedOutTasks(context.Background())
+	count, err = model.GetRunningCountForUser(userID)
+	require.NoError(t, err)
+	assert.Equal(t, 0, count, "退款成功且终态确立后释放名额")
+	require.NoError(t, model.DB.First(&reloaded, task.ID).Error)
+	assert.EqualValues(t, model.TaskStatusFailure, reloaded.Status)
+	assert.True(t, reloaded.ConcurrencyReleased)
+	assert.Zero(t, reloaded.Quota)
+}
+
+// 旧系统遗留任务（isLegacy）不退款、quota 清零 → 终态确立即释放名额。
+func TestSweepTimedOutTasks_LegacyTaskReleasesSlot(t *testing.T) {
+	truncate(t)
+	cleanupConcurrencyTestData(t)
+	wipeConcurrencySlots(t)
+
+	oldTimeout := constant.TaskTimeoutMinutes
+	constant.TaskTimeoutMinutes = 120
+	t.Cleanup(func() { constant.TaskTimeoutMinutes = oldTimeout })
+
+	const userID, preConsumed = 71, 1200
+	seedUser(t, userID, 5000)
+
+	task := &model.Task{
+		TaskID:     "sweep_legacy_task",
+		UserId:     userID,
+		Platform:   constant.TaskPlatform("54"),
+		Quota:      preConsumed,
+		Status:     model.TaskStatus(model.TaskStatusQueued),
+		Group:      "default",
+		Data:       json.RawMessage(`{}`),
+		SubmitTime: model.TaskRefundLegacyCutoff - 3600, // 早于遗留任务分界
+		CreatedAt:  time.Now().Unix(),
+		UpdatedAt:  time.Now().Unix(),
+	}
+	// 与生产顺序一致：先预留名额，再创建任务行
+	ok, _, err := model.ReserveTaskConcurrencySlot(userID, 3)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.NoError(t, model.DB.Create(task).Error)
+
+	sweepTimedOutTasks(context.Background())
+
+	count, err := model.GetRunningCountForUser(userID)
+	require.NoError(t, err)
+	assert.Equal(t, 0, count, "遗留任务终态确立（不退款）后释放名额")
+	var reloaded model.Task
+	require.NoError(t, model.DB.First(&reloaded, task.ID).Error)
+	assert.EqualValues(t, model.TaskStatusFailure, reloaded.Status)
+	assert.True(t, reloaded.ConcurrencyReleased)
+	assert.Zero(t, reloaded.Quota)
+}
+
+// failingRefundStubAdaptor 返回确定失败的任务结果，供 updateVideoSingleTask 驱动
+// 退款路径（累计消耗守卫失败 → RefundTaskQuota 返回 false）。
+type failingRefundStubAdaptor struct{}
+
+func (failingRefundStubAdaptor) Init(_ *relaycommon.RelayInfo) {}
+func (failingRefundStubAdaptor) FetchTask(_ string, _ string, _ map[string]any, _ string) (*http.Response, error) {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(`{"status":"FAILURE","reason":"boom"}`)),
+	}, nil
+}
+func (failingRefundStubAdaptor) ParseTaskResult(body []byte) (*relaycommon.TaskInfo, error) {
+	return &relaycommon.TaskInfo{Status: "FAILURE", Reason: "boom"}, nil
+}
+func (failingRefundStubAdaptor) AdjustBillingOnComplete(_ *model.Task, _ *relaycommon.TaskInfo) int {
+	return 0
+}
+
+// updateVideoSingleTask：退款失败 → 回退非终态且名额保留；补足累计消耗后再次
+// 轮询 → 终态确立且退款成功 → 释放名额。
+func TestUpdateVideoSingleTask_RefundFailureKeepsConcurrencySlot(t *testing.T) {
+	truncate(t)
+	cleanupConcurrencyTestData(t)
+	wipeConcurrencySlots(t)
+	ctx := context.Background()
+
+	const userID, channelID, preConsumed = 72, 72, 1200
+	seedUser(t, userID, 5000)
+	seedChannel(t, channelID)
+	// 不 seed used_quota → RefundTaskQuota 的累计消耗守卫失败
+
+	task := &model.Task{
+		TaskID:    "upstream1",
+		UserId:    userID,
+		Platform:  constant.TaskPlatform("54"),
+		ChannelId: channelID,
+		Quota:     preConsumed,
+		Status:    model.TaskStatus(model.TaskStatusQueued),
+		Group:     "default",
+		Data:      json.RawMessage(`{}`),
+		CreatedAt: time.Now().Unix(),
+		UpdatedAt: time.Now().Unix(),
+		PrivateData: model.TaskPrivateData{
+			ConsumeLogRecorded: true,
+		},
+	}
+	// 与生产顺序一致：先预留名额，再创建任务行
+	ok, _, err := model.ReserveTaskConcurrencySlot(userID, 3)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.NoError(t, model.DB.Create(task).Error)
+	ch := &model.Channel{Id: channelID, Type: constant.ChannelTypeDoubaoVideo, Name: "t", Key: "sk-t", Status: common.ChannelStatusEnabled}
+
+	taskM := map[string]*model.Task{task.TaskID: task}
+	require.NoError(t, updateVideoSingleTask(ctx, failingRefundStubAdaptor{}, ch, task.TaskID, taskM))
+
+	count, err := model.GetRunningCountForUser(userID)
+	require.NoError(t, err)
+	assert.Equal(t, 1, count, "退款失败回退非终态，名额不得释放")
+	var reloaded model.Task
+	require.NoError(t, model.DB.First(&reloaded, task.ID).Error)
+	assert.EqualValues(t, model.TaskStatusQueued, reloaded.Status, "退款失败应回退到非终态")
+	assert.False(t, reloaded.ConcurrencyReleased, "回退非终态后 ConcurrencyReleased 必须保持 false")
+	assert.Equal(t, preConsumed, reloaded.Quota)
+
+	// 补上累计消耗后再次轮询：退款成功 + 终态确立 → 释放名额
+	seedUsedQuota(t, userID, channelID, preConsumed)
+	var fresh model.Task
+	require.NoError(t, model.DB.First(&fresh, task.ID).Error)
+	freshM := map[string]*model.Task{fresh.TaskID: &fresh}
+	require.NoError(t, updateVideoSingleTask(ctx, failingRefundStubAdaptor{}, ch, fresh.TaskID, freshM))
+
+	count, err = model.GetRunningCountForUser(userID)
+	require.NoError(t, err)
+	assert.Equal(t, 0, count, "退款成功且终态确立后释放名额")
+	require.NoError(t, model.DB.First(&reloaded, task.ID).Error)
+	assert.EqualValues(t, model.TaskStatusFailure, reloaded.Status)
+	assert.True(t, reloaded.ConcurrencyReleased)
+	assert.Zero(t, reloaded.Quota)
+}
+
+// 对照：CAS 未胜出（其他路径已转终态）时，本路径不释放名额也不计费。
+func TestUpdateVideoSingleTask_CASLostNoRelease(t *testing.T) {
+	truncate(t)
+	cleanupConcurrencyTestData(t)
+	wipeConcurrencySlots(t)
+	ctx := context.Background()
+
+	const userID, channelID, preConsumed = 73, 73, 1200
+	seedUser(t, userID, 5000)
+	seedChannel(t, channelID)
+
+	task := &model.Task{
+		TaskID:    "upstream_cas_lost",
+		UserId:    userID,
+		Platform:  constant.TaskPlatform("54"),
+		ChannelId: channelID,
+		Quota:     preConsumed,
+		Status:    model.TaskStatus(model.TaskStatusQueued),
+		Group:     "default",
+		Data:      json.RawMessage(`{}`),
+		CreatedAt: time.Now().Unix(),
+		UpdatedAt: time.Now().Unix(),
+	}
+	// 与生产顺序一致：先预留名额，再创建任务行
+	ok, _, err := model.ReserveTaskConcurrencySlot(userID, 3)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.NoError(t, model.DB.Create(task).Error)
+	ch := &model.Channel{Id: channelID, Type: constant.ChannelTypeDoubaoVideo, Name: "t", Key: "sk-t", Status: common.ChannelStatusEnabled}
+
+	// 模拟另一路径已把任务推进为 FAILURE（CAS 将失败）
+	require.NoError(t, model.DB.Model(&model.Task{}).Where("id = ?", task.ID).Update("status", model.TaskStatusFailure).Error)
+
+	taskM := map[string]*model.Task{task.TaskID: task}
+	require.NoError(t, updateVideoSingleTask(ctx, failingRefundStubAdaptor{}, ch, task.TaskID, taskM))
+
+	// 本路径 CAS 失败 → 不释放（名额由胜出路径释放）
+	count, err := model.GetRunningCountForUser(userID)
+	require.NoError(t, err)
+	assert.Equal(t, 1, count, "CAS 未胜出不得释放名额")
+	var reloaded model.Task
+	require.NoError(t, model.DB.First(&reloaded, task.ID).Error)
+	assert.False(t, reloaded.ConcurrencyReleased)
 }

@@ -205,6 +205,9 @@ func TaskErrorWrapper(err error, code string, statusCode int) *taskdto.TaskError
 		//text = "请求上游地址失败"
 		text = common.MaskSensitiveInfo(text)
 	}
+	// 始终脱敏凭据类信息（方舟 Endpoint ID / API Key / Bearer Token），
+	// 防止上游错误文本中的敏感信息透传给客户端。
+	text = common.RedactCredentials(text)
 	//避免暴露内部错误
 	taskError := &taskdto.TaskError{
 		Code:       code,
@@ -223,7 +226,7 @@ func TaskErrorFromAPIError(apiErr *types.NewAPIError) *taskdto.TaskError {
 	}
 	return &taskdto.TaskError{
 		Code:       string(apiErr.GetErrorCode()),
-		Message:    apiErr.Err.Error(),
+		Message:    common.RedactCredentials(apiErr.Err.Error()),
 		StatusCode: apiErr.StatusCode,
 		Error:      apiErr.Err,
 	}

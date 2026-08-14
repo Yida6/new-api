@@ -141,3 +141,11 @@ func MaskEmail(email string) string {
 func MaskSensitiveInfo(str string) string {
 	return kitutil.MaskSensitiveInfo(str)
 }
+
+// RedactCredentials masks credential-like values (Ark Endpoint IDs, API keys,
+// bearer tokens) that must never appear in client-facing output. Unlike
+// MaskSensitiveInfo it leaves URLs/domains/IPs untouched, so it is safe for
+// upstream error text and stored payloads.
+func RedactCredentials(str string) string {
+	return kitutil.RedactCredentials(str)
+}

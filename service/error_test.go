@@ -159,3 +159,83 @@ func withDebugEnabled(t *testing.T, enabled bool) {
 		common.DebugEnabled = oldDebug
 	})
 }
+
+// TestTaskErrorWrapperRedactsSensitiveInfo verifies that task error messages
+// always have credential-like values (Ark Endpoint ID / API key / bearer
+// token) masked, including non-network upstream errors that previously passed
+// through unmasked.
+func TestTaskErrorWrapperRedactsSensitiveInfo(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		message  string
+		expected string
+	}{
+		{
+			name:     "ark endpoint id in upstream error",
+			message:  "model ep-20250101-abc123 does not exist or you do not have access",
+			expected: "model ep-*** does not exist or you do not have access",
+		},
+		{
+			name:     "api key in error text",
+			message:  "auth failed: Bearer sk-abc123def456ghi789",
+			expected: "auth failed: Bearer ***",
+		},
+		{
+			name:     "network error with url (full masking applied)",
+			message:  "Post https://ark.example.com/api/v3/chat/completions: dial tcp",
+			expected: "Post https://***.com/***/***/***/*** dial tcp",
+		},
+		{
+			name:     "plain business error unchanged",
+			message:  "任务超时（60分钟）",
+			expected: "任务超时（60分钟）",
+		},
+		{
+			name:     "model name unchanged",
+			message:  "doubao-seedance-2-0-260128 unavailable",
+			expected: "doubao-seedance-2-0-260128 unavailable",
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := TaskErrorWrapper(fmt.Errorf("%s", tc.message), "upstream_error", http.StatusBadGateway)
+			require.Equal(t, tc.expected, err.Message)
+			// The original error is preserved for internal logging.
+			require.Equal(t, tc.message, err.Error.Error())
+		})
+	}
+}
+
+// TestTaskErrorFromAPIErrorRedactsSensitiveInfo verifies billing-to-task error
+// conversion also masks credentials.
+func TestTaskErrorFromAPIErrorRedactsSensitiveInfo(t *testing.T) {
+	t.Parallel()
+
+	apiErr := types.NewOpenAIError(fmt.Errorf("insufficient quota for ep-20250101-abc123 with key sk-abc123def456ghi789"),
+		types.ErrorCodeInsufficientUserQuota, http.StatusBadRequest)
+	taskErr := TaskErrorFromAPIError(apiErr)
+	require.NotNil(t, taskErr)
+	require.Equal(t, "insufficient quota for ep-*** with key sk-***", taskErr.Message)
+}
+
+// TestRelayErrorHandlerRedactsCredentialsInOpenAIError verifies the structured
+// OpenAI error message relayed to clients has credentials masked (via the
+// ToOpenAIError pipeline which applies MaskSensitiveInfo).
+func TestRelayErrorHandlerRedactsCredentialsInOpenAIError(t *testing.T) {
+	body := `{"error":{"message":"model ep-20250101-abc123 not found, key sk-abc123def456ghi789","type":"invalid_request_error","code":"model_not_found"}}`
+	resp := &http.Response{
+		StatusCode: http.StatusBadRequest,
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+
+	newAPIError := RelayErrorHandler(context.Background(), resp, false)
+	require.NotNil(t, newAPIError)
+
+	oaiErr := newAPIError.ToOpenAIError()
+	require.Equal(t, "model ep-*** not found, key sk-***", oaiErr.Message)
+}

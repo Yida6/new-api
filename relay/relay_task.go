@@ -2,6 +2,7 @@ package relay
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -28,6 +29,14 @@ type TaskSubmitResult struct {
 	Platform       constant.TaskPlatform
 	Quota          int
 	//PerCallPrice   types.PriceData
+}
+
+// PreConsumeMultiplierProvider 由需要"仅预扣缓冲"的任务适配器（当前仅
+// Seedance/doubao）实现：返回提交前保守预留的额外倍率（时长缓冲、无价格表
+// 模型保守系数）。该倍率只放大预扣，**绝不**写入 OtherRatios，因此不会进入
+// 真实 Token 结算（见 relay/relay_task.go 第 6 步与 computeTaskQuotaByTokens）。
+type PreConsumeMultiplierProvider interface {
+	PreConsumeMultiplier(c *gin.Context, info *relaycommon.RelayInfo) float64
 }
 
 // ResolveOriginTask 处理基于已有任务的提交（remix / continuation）：
@@ -105,28 +114,27 @@ func ResolveOriginTask(c *gin.Context, info *relaycommon.RelayInfo) *dto.TaskErr
 		info.ApiKey = key
 	}
 
-	// 提取 remix 参数（时长、分辨率 → OtherRatios）
+	// 提取 remix 参数（分辨率等定价倍率 → OtherRatios）。
+	// 注意：**时长（seconds）不作为结算倍率**——token 数已隐含时长，且时长
+	// 预扣缓冲由 doubao adaptor 的 PreConsumeMultiplier 单独承载；若把 seconds
+	// 写进 OtherRatios，轮询阶段按 totalTokens 结算时会再次乘上时长倍率，
+	// 造成重复计费。旧任务的 BillingContext.OtherRatios 若含 seconds（历史
+	// 数据），复制时显式过滤。
 	if info.Action == constant.TaskActionRemix {
 		if originTask.PrivateData.BillingContext != nil {
-			// 新的 remix 逻辑：直接从原始任务的 BillingContext 中提取 OtherRatios（如果存在）
+			// 新的 remix 逻辑：直接从原始任务的 BillingContext 中提取 OtherRatios
+			// （仅定价倍率，过滤时长缓冲）
 			for s, f := range originTask.PrivateData.BillingContext.OtherRatios {
+				if s == "seconds" {
+					continue
+				}
 				info.PriceData.AddOtherRatio(s, f)
 			}
 		} else {
-			// 旧的 remix 逻辑：直接从 task data 解析 seconds 和 size（如果存在）
+			// 旧的 remix 逻辑：直接从 task data 解析 size（如果存在）
 			var taskData map[string]interface{}
 			_ = common.Unmarshal(originTask.Data, &taskData)
-			secondsStr, _ := taskData["seconds"].(string)
-			seconds, _ := strconv.Atoi(secondsStr)
-			if seconds <= 0 {
-				seconds = 4
-			}
-			// 历史任务数据可能包含未经校验的时长，作为计费乘数前必须钳制
-			if seconds > relaycommon.MaxTaskDurationSeconds {
-				seconds = relaycommon.MaxTaskDurationSeconds
-			}
 			sizeStr, _ := taskData["size"].(string)
-			info.PriceData.AddOtherRatio("seconds", float64(seconds))
 			info.PriceData.AddOtherRatio("size", 1)
 			if sizeStr == "1792x1024" || sizeStr == "1024x1792" {
 				info.PriceData.AddOtherRatio("size", 1.666667)
@@ -155,21 +163,27 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 		return nil, service.TaskErrorWrapperLocal(fmt.Errorf("invalid api platform: %s", platform), "invalid_api_platform", http.StatusBadRequest)
 	}
 	adaptor.Init(info)
-	if taskErr := adaptor.ValidateRequestAndSetAction(c, info); taskErr != nil {
-		return nil, taskErr
-	}
 
-	// 2. 确定模型名称
+	// 2. 确定模型名称（对外公开名；remix 等 action 由 action 推导）
 	modelName := info.OriginModelName
 	if modelName == "" {
 		modelName = service.CoverTaskActionToModelName(platform, info.Action)
 	}
-
-	// 2.5 应用渠道的模型映射（与同步任务对齐）
 	info.OriginModelName = modelName
 	info.UpstreamModelName = modelName
+
+	// 2.5 应用渠道的模型映射（与同步任务对齐）。
+	// 必须在适配器参数校验（ValidateRequestAndSetAction）**之前**完成：
+	// Seedance 的价格表解析同时依赖公开别名与映射后的上游模型版本，校验与
+	// 估算必须使用同一映射结果，否则"经渠道映射到规范版本/无表模型"的请求
+	// 会在校验阶段被当作无表模型放行（如 fast 模型缺失的 1080p 档），
+	// 违反"价格表缺失组合发送上游前必须 400"的契约。
 	if err := helper.ModelMappedHelper(c, info, nil); err != nil {
 		return nil, service.TaskErrorWrapperLocal(err, "model_mapping_failed", http.StatusBadRequest)
+	}
+
+	if taskErr := adaptor.ValidateRequestAndSetAction(c, info); taskErr != nil {
+		return nil, taskErr
 	}
 
 	// 3. 预生成公开 task ID（仅首次）
@@ -194,12 +208,35 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 		}
 	}
 
-	// 6. 将 OtherRatios 应用到基础额度（饱和转换，防止溢出成负数）
+	// 6. 将 OtherRatios（定价倍率）应用到基础额度，再叠加仅预扣缓冲
+	//    （PreConsumeMultiplier：时长/无表模型保守系数，只用于预留、绝不进入
+	//    真实结算），饱和转换防止溢出成负数。
 	if !common.StringsContains(constant.TaskPricePatches, modelName) {
 		quotaWithRatios := info.PriceData.ApplyOtherRatiosToFloat(float64(info.PriceData.Quota))
+		if provider, ok := adaptor.(PreConsumeMultiplierProvider); ok {
+			if m := provider.PreConsumeMultiplier(c, info); m > 1.0 {
+				quotaWithRatios *= m
+				info.PriceData.PreConsumeMultiplier = m
+			}
+		}
 		quota, clamp := common.QuotaFromFloatChecked(quotaWithRatios)
 		info.PriceData.Quota = quota
 		noteTaskQuotaClamp(info, clamp)
+	}
+
+	// 6.5 全站 Seedance 成本保护：在任何上游请求字节发出之前原子预留
+	// 当日预计成本。轮询/结算路径不经过此处，所以已提交任务不受熔断影响。
+	if relaycommon.IsStrictIdempotencyChannel(info.ChannelType) && info.SeedanceCostMicros == 0 {
+		costMicros := service.EstimateSeedanceUpstreamCostMicros(info.PriceData)
+		reservation, reserveErr := service.ReserveSeedanceCost(costMicros)
+		if reserveErr != nil {
+			return nil, service.TaskErrorWrapperLocal(reserveErr, "seedance_cost_check_failed", http.StatusServiceUnavailable)
+		}
+		if !reservation.Allowed {
+			return nil, service.TaskErrorWrapperLocal(errors.New("Seedance 全站成本保护已触发，当前暂不接受新任务。已提交任务不受影响并会继续处理，请稍后再试或联系管理员。"), "SEEDANCE_COST_CIRCUIT_OPEN", http.StatusServiceUnavailable)
+		}
+		info.SeedanceCostPeriod = reservation.Period
+		info.SeedanceCostMicros = costMicros
 	}
 
 	// 7. 预扣费（仅首次 — 重试时 info.Billing 已存在，跳过）
@@ -216,12 +253,30 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 		return nil, service.TaskErrorWrapper(err, "build_request_failed", http.StatusInternalServerError)
 	}
 
+	// 8.5 确保本次创建请求的 X-Client-Request-Id（日志串联/排查用，非幂等键）。
+	// 同一逻辑任务的每次重试复用同一值；全新任务生成新值。
+	info.EnsureTaskClientRequestID()
+
 	// 9. 发送请求
 	resp, err := adaptor.DoRequest(c, info, requestBody)
 	if err != nil {
+		// 对结果分类：发送前失败可安全重试；读取响应超时/连接中断等一律视为
+		// 结果未知（服务端可能已创建任务），禁止自动重发。
+		outcome := relaycommon.ClassifySubmitError(err)
+		if info.TaskRelayInfo != nil {
+			info.TaskRelayInfo.SubmitOutcome = outcome
+		}
+		if outcome == relaycommon.TaskSubmitOutcomeOutcomeUnknown {
+			info.SeedanceCostCommitted = true
+			return nil, service.TaskErrorWrapper(err, "task_submit_outcome_unknown", http.StatusBadGateway)
+		}
 		return nil, service.TaskErrorWrapper(err, "do_request_failed", http.StatusInternalServerError)
 	}
 	if resp != nil && resp.StatusCode != http.StatusOK {
+		// 明确收到可判定失败的响应（4xx/5xx 错误体）→ confirmed_failure，不自动重发。
+		if info.TaskRelayInfo != nil {
+			info.TaskRelayInfo.SubmitOutcome = relaycommon.TaskSubmitOutcomeConfirmedFailure
+		}
 		responseBody, _ := io.ReadAll(resp.Body)
 		return nil, service.TaskErrorWrapper(fmt.Errorf("%s", string(responseBody)), "fail_to_fetch_task", resp.StatusCode)
 	}
@@ -237,7 +292,21 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	// 11. 解析响应
 	upstreamTaskID, taskData, taskErr := adaptor.DoResponse(c, resp, info)
 	if taskErr != nil {
+		// 收到 200 但无法解析出上游 task_id：服务端很可能已创建任务但本地拿不到
+		// 标识，无法用 filter.task_ids 精确查询 → 结果未知，禁止自动重发。
+		if info.TaskRelayInfo != nil {
+			info.TaskRelayInfo.SubmitOutcome = relaycommon.TaskSubmitOutcomeOutcomeUnknown
+			if relaycommon.IsStrictIdempotencyChannel(info.ChannelType) {
+				info.TaskRelayInfo.SeedanceCostCommitted = true
+			}
+		}
 		return nil, taskErr
+	}
+	if info.TaskRelayInfo != nil {
+		info.TaskRelayInfo.SubmitOutcome = relaycommon.TaskSubmitOutcomeConfirmedSuccess
+		if relaycommon.IsStrictIdempotencyChannel(info.ChannelType) {
+			info.TaskRelayInfo.SeedanceCostCommitted = true
+		}
 	}
 
 	// 11. 提交后计费调整：让适配器根据上游实际返回调整 OtherRatios
@@ -548,6 +617,20 @@ func mapTaskStatusToSimple(status model.TaskStatus) string {
 }
 
 func TaskModel2Dto(task *model.Task) *dto.TaskDto {
+	resultURL := common.RedactCredentials(task.GetResultURL())
+	data := redactTaskData(task.Data)
+	failReason := common.RedactCredentials(task.FailReason)
+	if model.IsSeedanceTaskPlatform(task.Platform) {
+		// Seedance 资源禁止在接口响应中返回可绕过本地鉴权的上游直链：
+		// 结果 URL 一律替换为本服务鉴权代理入口（/v1/videos/:task_id/content），
+		// 存储的原始上游状态响应（含 content.video_url）同样脱敏。
+		// 内部存储与轮询/结算流程仍读原始值（task.PrivateData.ResultURL 不变）。
+		resultURL = taskcommon.BuildProxyURL(task.TaskID)
+		data = sanitizeSeedanceTaskData(data)
+		// RedactCredentials 只掩码凭证、保留 URL/域名；上游错误文本可能携带
+		// 资源直链，Seedance 对外错误信息一律按敏感信息掩码（URL/域名/IP/凭证）。
+		failReason = common.MaskSensitiveInfo(task.FailReason)
+	}
 	return &dto.TaskDto{
 		ID:         task.ID,
 		CreatedAt:  task.CreatedAt,
@@ -560,14 +643,116 @@ func TaskModel2Dto(task *model.Task) *dto.TaskDto {
 		Quota:      task.Quota,
 		Action:     task.Action,
 		Status:     string(task.Status),
-		FailReason: task.FailReason,
-		ResultURL:  task.GetResultURL(),
+		FailReason: failReason,
+		// GetResultURL 对旧数据会回退到 FailReason（可能含上游错误原文），
+		// 因此结果 URL 同样需要脱敏；正常视频地址（http/data URL）不受影响。
+		ResultURL:  resultURL,
 		SubmitTime: task.SubmitTime,
 		StartTime:  task.StartTime,
 		FinishTime: task.FinishTime,
 		Progress:   task.Progress,
-		Properties: task.Properties,
+		// Properties 使用脱敏副本：UpstreamModelName（可能为方舟 Endpoint ID）
+		// 绝不暴露给客户端，内部存储与 remix/恢复流程仍读原始值。
+		Properties: task.Properties.Sanitized(),
 		Username:   task.Username,
-		Data:       task.Data,
+		Data:       data,
 	}
+}
+
+// seedanceUpstreamURLLeafFields 是可能携带上游资源地址的字段名集合。
+// Seedance 上游状态响应通过 content.video_url / content[].video_url.url 等
+// 字段携带可直接访问的上游地址；命中即整体删除（含嵌套对象/数组中的同名值），
+// 不依赖单一字段名。内部存储与轮询/结算流程仍读原始值，不受影响。
+var seedanceUpstreamURLLeafFields = map[string]struct{}{
+	"url":           {},
+	"video_url":     {},
+	"result_url":    {},
+	"download_url":  {},
+	"play_url":      {},
+	"cover_url":     {},
+	"image_url":     {},
+	"thumbnail_url": {},
+	"poster_url":    {},
+}
+
+// sanitizeSeedanceTaskData 返回 Seedance 任务存储数据中不含上游资源直链的副本。
+// 采用 fail-closed 策略：
+//   - 仅接受 JSON 对象（Seedance 上游状态响应的契约形状），其他任何结构
+//     （数组/标量/null/非 JSON）一律返回 null；
+//   - 递归重建整棵对象树，遇到任何可能携带上游资源地址的字段一律删除；
+//   - 字符串值中出现 URL（含 "://"）时按敏感信息掩码，防止非 URL 字段名
+//     夹带上游地址；
+//   - 解析或序列化失败返回 null，绝不回退原始数据（原始数据可能含上游地址）。
+func sanitizeSeedanceTaskData(data json.RawMessage) json.RawMessage {
+	if len(data) == 0 {
+		return data
+	}
+	var v any
+	if err := common.Unmarshal(data, &v); err != nil {
+		return json.RawMessage("null")
+	}
+	root, isObject := v.(map[string]any)
+	if !isObject {
+		// 非对象结构无法按对象语义可靠清洗，fail-closed 返回 null。
+		return json.RawMessage("null")
+	}
+	cleaned, _ := sanitizeSeedanceValue(root)
+	b, err := common.Marshal(cleaned)
+	if err != nil {
+		return json.RawMessage("null")
+	}
+	return json.RawMessage(b)
+}
+
+// sanitizeSeedanceValue 递归重建节点，返回不含上游资源直链的安全副本。
+// 第二个返回值表示该节点是否还有需要保留的数据（false 表示已清空，
+// 调用方应删除对应字段，避免保留空壳结构）。
+func sanitizeSeedanceValue(v any) (any, bool) {
+	switch node := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(node))
+		for k, val := range node {
+			if _, isURLField := seedanceUpstreamURLLeafFields[k]; isURLField {
+				continue
+			}
+			cleaned, keep := sanitizeSeedanceValue(val)
+			if keep {
+				out[k] = cleaned
+			}
+		}
+		if len(out) == 0 {
+			return nil, false
+		}
+		return out, true
+	case []any:
+		out := make([]any, 0, len(node))
+		for _, val := range node {
+			cleaned, keep := sanitizeSeedanceValue(val)
+			if keep {
+				out = append(out, cleaned)
+			}
+		}
+		if len(out) == 0 {
+			return nil, false
+		}
+		return out, true
+	case string:
+		if strings.Contains(node, "://") {
+			// 字符串值携带 URL：掩码主机/路径/查询，绝不向客户端泄露可访问地址。
+			return common.MaskSensitiveInfo(node), true
+		}
+		return node, true
+	default:
+		return v, true
+	}
+}
+
+// redactTaskData removes credential-like values (e.g. Ark Endpoint IDs echoed
+// by the upstream in task status responses) from the stored task payload before
+// it is returned to clients. Nil/empty payloads pass through untouched.
+func redactTaskData(data json.RawMessage) json.RawMessage {
+	if len(data) == 0 {
+		return data
+	}
+	return json.RawMessage(common.RedactCredentials(string(data)))
 }

@@ -28,9 +28,12 @@ import (
 
 func RelayMidjourneyImage(c *gin.Context) {
 	taskId := c.Param("id")
-	midjourneyTask := model.GetByOnlyMJId(taskId)
+	// 强制所有权校验：仅允许访问属于当前用户的任务资源。任务不存在或
+	// 属于其他用户时统一返回 404，避免泄露资源存在性。
+	userId := c.GetInt("id")
+	midjourneyTask := model.GetByMJId(userId, taskId)
 	if midjourneyTask == nil {
-		c.JSON(400, gin.H{
+		c.JSON(http.StatusNotFound, gin.H{
 			"error": "midjourney_task_not_found",
 		})
 		return
@@ -61,8 +64,10 @@ func RelayMidjourneyImage(c *gin.Context) {
 		validateErr = common.ValidateURLWithFetchSetting(midjourneyTask.ImageUrl, fetchSetting.EnableSSRFProtection, fetchSetting.AllowPrivateIp, fetchSetting.DomainFilterMode, fetchSetting.IpFilterMode, fetchSetting.DomainList, fetchSetting.IpList, fetchSetting.AllowedPorts, fetchSetting.ApplyIPFilterForDomain)
 	}
 	if validateErr != nil {
+		// 不向客户端回显校验错误原文（其中包含上游资源 URL），仅记录服务端日志。
+		log.Println("Midjourney image fetch blocked:", common.RedactCredentials(validateErr.Error()))
 		c.JSON(http.StatusForbidden, gin.H{
-			"error": fmt.Sprintf("request blocked: %v", validateErr),
+			"error": "request_blocked_by_server_policy",
 		})
 		return
 	}
@@ -75,9 +80,11 @@ func RelayMidjourneyImage(c *gin.Context) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		// 不回显上游响应体（可能包含上游地址/错误细节），仅记录服务端日志。
 		responseBody, _ := io.ReadAll(resp.Body)
-		c.JSON(resp.StatusCode, gin.H{
-			"error": string(responseBody),
+		log.Println("Midjourney image upstream status:", resp.StatusCode, common.RedactCredentials(string(responseBody)))
+		c.JSON(http.StatusBadGateway, gin.H{
+			"error": "upstream_image_fetch_failed",
 		})
 		return
 	}
@@ -90,9 +97,10 @@ func RelayMidjourneyImage(c *gin.Context) {
 	// 设置响应的内容类型
 	c.Writer.Header().Set("Content-Type", contentType)
 	// 将图片流式传输到响应体
+	// 标准库 log 出口不经过 logger.logHelper，直接脱敏凭据类值。
 	_, err = io.Copy(c.Writer, resp.Body)
 	if err != nil {
-		log.Println("Failed to stream image:", err)
+		log.Println("Failed to stream image:", common.RedactCredentials(err.Error()))
 	}
 	return
 }
@@ -232,30 +240,10 @@ func RelaySwapFace(c *gin.Context, info *relaycommon.RelayInfo) *dto.MidjourneyR
 	if err != nil {
 		return &mjResp.Response
 	}
-	defer func() {
-		if mjResp.StatusCode == 200 && mjResp.Response.Code == 1 {
-			err := service.PostConsumeQuota(info, priceData.Quota, 0, true)
-			if err != nil {
-				common.SysLog("error consuming token remain quota: " + err.Error())
-			}
-
-			tokenName := c.GetString("token_name")
-			logContent := fmt.Sprintf("模型固定价格 %.2f，分组倍率 %.2f，操作 %s", priceData.ModelPrice, priceData.GroupRatioInfo.GroupRatio, constant.MjActionSwapFace)
-			other := service.GenerateMjOtherInfo(info, priceData)
-			model.RecordConsumeLog(c, info.UserId, model.RecordConsumeLogParams{
-				ChannelId: info.ChannelId,
-				ModelName: modelName,
-				TokenName: tokenName,
-				Quota:     priceData.Quota,
-				Content:   logContent,
-				TokenId:   info.TokenId,
-				Group:     info.UsingGroup,
-				Other:     other,
-			})
-			model.UpdateUserUsedQuotaAndRequestCount(info.UserId, priceData.Quota)
-			model.UpdateChannelUsedQuota(info.ChannelId, priceData.Quota)
-		}
-	}()
+	// 计费（扣款 + 消费日志 + 累计消耗）必须在任务落库前同步完成，且按实际结果
+	// 回填 ConsumeLogRecorded——不能在任务插入后的 defer 里执行，否则任务行写入的
+	// 标记永远不等于真实日志结果。统计写入失败不中止插入：上游已创建、钱包已扣款，
+	// 本地必须保留任务生命周期记录（轮询/退款依赖），仅标记统计缺失。
 	midjResponse := &mjResp.Response
 	midjourneyTask := &model.Midjourney{
 		UserId:      info.UserId,
@@ -275,6 +263,11 @@ func RelaySwapFace(c *gin.Context, info *relaycommon.RelayInfo) *dto.MidjourneyR
 		FailReason:  "",
 		ChannelId:   c.GetInt("channel_id"),
 		Quota:       priceData.Quota,
+	}
+	if mjResp.StatusCode == 200 && mjResp.Response.Code == 1 {
+		logContent := fmt.Sprintf("模型固定价格 %.2f，分组倍率 %.2f，操作 %s", priceData.ModelPrice, priceData.GroupRatioInfo.GroupRatio, constant.MjActionSwapFace)
+		other := service.GenerateMjOtherInfo(info, priceData)
+		applyMjBillingAndMark(c, info, midjourneyTask, priceData.Quota, logContent, other, modelName)
 	}
 	err = midjourneyTask.Insert()
 	if err != nil {
@@ -539,30 +532,6 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 	}
 	midjResponse := &midjResponseWithStatus.Response
 
-	defer func() {
-		if consumeQuota && midjResponseWithStatus.StatusCode == 200 {
-			err := service.PostConsumeQuota(relayInfo, priceData.Quota, 0, true)
-			if err != nil {
-				common.SysLog("error consuming token remain quota: " + err.Error())
-			}
-			tokenName := c.GetString("token_name")
-			logContent := fmt.Sprintf("模型固定价格 %.2f，分组倍率 %.2f，操作 %s，ID %s", priceData.ModelPrice, priceData.GroupRatioInfo.GroupRatio, midjRequest.Action, midjResponse.Result)
-			other := service.GenerateMjOtherInfo(relayInfo, priceData)
-			model.RecordConsumeLog(c, relayInfo.UserId, model.RecordConsumeLogParams{
-				ChannelId: relayInfo.ChannelId,
-				ModelName: modelName,
-				TokenName: tokenName,
-				Quota:     priceData.Quota,
-				Content:   logContent,
-				TokenId:   relayInfo.TokenId,
-				Group:     relayInfo.UsingGroup,
-				Other:     other,
-			})
-			model.UpdateUserUsedQuotaAndRequestCount(relayInfo.UserId, priceData.Quota)
-			model.UpdateChannelUsedQuota(relayInfo.ChannelId, priceData.Quota)
-		}
-	}()
-
 	// 文档：https://github.com/novicezk/midjourney-proxy/blob/main/docs/api.md
 	//1-提交成功
 	// 21-任务已存在（处理中或者有结果了） {"code":21,"description":"任务已存在","result":"0741798445574458","properties":{"status":"SUCCESS","imageUrl":"https://xxxx"}}
@@ -571,23 +540,24 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 	// 24-prompt包含敏感词 {"code":24,"description":"可能包含敏感词","properties":{"promptEn":"nude body","bannedWord":"nude"}}
 	// other: 提交错误，description为错误描述
 	midjourneyTask := &model.Midjourney{
-		UserId:      relayInfo.UserId,
-		Code:        midjResponse.Code,
-		Action:      midjRequest.Action,
-		MjId:        midjResponse.Result,
-		Prompt:      midjRequest.Prompt,
-		PromptEn:    "",
-		Description: midjResponse.Description,
-		State:       "",
-		SubmitTime:  time.Now().UnixNano() / int64(time.Millisecond),
-		StartTime:   0,
-		FinishTime:  0,
-		ImageUrl:    "",
-		Status:      "",
-		Progress:    "0%",
-		FailReason:  "",
-		ChannelId:   c.GetInt("channel_id"),
-		Quota:       priceData.Quota,
+		UserId:             relayInfo.UserId,
+		Code:               midjResponse.Code,
+		Action:             midjRequest.Action,
+		MjId:               midjResponse.Result,
+		Prompt:             midjRequest.Prompt,
+		PromptEn:           "",
+		Description:        midjResponse.Description,
+		State:              "",
+		SubmitTime:         time.Now().UnixNano() / int64(time.Millisecond),
+		StartTime:          0,
+		FinishTime:         0,
+		ImageUrl:           "",
+		Status:             "",
+		Progress:           "0%",
+		FailReason:         "",
+		ChannelId:          c.GetInt("channel_id"),
+		ConsumeLogRecorded: false, // 由下方计费块按 RecordConsumeLog 实际结果回填
+		Quota:              priceData.Quota,
 	}
 	if midjResponse.Code == 3 {
 		//无实例账号自动禁用渠道（No available account instance）
@@ -632,6 +602,18 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 		midjourneyTask.Progress = "100%"
 		midjourneyTask.Status = "SUCCESS"
 	}
+
+	// 计费（扣款 + 消费日志 + 累计消耗）在任务落库前同步完成，并按实际结果回填
+	// ConsumeLogRecorded——原 defer 在任务插入后才执行，导致任务行的日志标记
+	// 恒等于全局开关而非真实写入结果。consumeQuota 此处已定稿（失败码置 false）。
+	// 统计写入失败不中止插入：上游已创建、钱包已扣款，本地必须保留任务生命周期
+	// 记录（轮询/退款依赖），仅标记统计缺失。
+	if consumeQuota && midjResponseWithStatus.StatusCode == 200 {
+		logContent := fmt.Sprintf("模型固定价格 %.2f，分组倍率 %.2f，操作 %s，ID %s", priceData.ModelPrice, priceData.GroupRatioInfo.GroupRatio, midjRequest.Action, midjResponse.Result)
+		other := service.GenerateMjOtherInfo(relayInfo, priceData)
+		applyMjBillingAndMark(c, relayInfo, midjourneyTask, priceData.Quota, logContent, other, modelName)
+	}
+
 	err = midjourneyTask.Insert()
 	if err != nil {
 		return &dto.MidjourneyResponse{

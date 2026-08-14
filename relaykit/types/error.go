@@ -85,6 +85,9 @@ const (
 	// quota error
 	ErrorCodeInsufficientUserQuota      ErrorCode = "insufficient_user_quota"
 	ErrorCodePreConsumeTokenQuotaFailed ErrorCode = "pre_consume_token_quota_failed"
+
+	// 欠款冻结：用户因 Seedance 差额欠款被自动冻结，阻止继续创建付费任务。
+	ErrorCodeDebtFrozen ErrorCode = "user_debt_frozen"
 )
 
 type NewAPIError struct {
@@ -154,7 +157,9 @@ func (e *NewAPIError) MaskSensitiveError() string {
 	}
 	errStr := e.Err.Error()
 	if e.errorCode == ErrorCodeCountTokenFailed {
-		return errStr
+		// count-token 错误刻意保留可读信息供定位，但凭据类值
+		// （方舟 Endpoint ID / API Key / Bearer Token）仍须脱敏。
+		return kitutil.RedactCredentials(errStr)
 	}
 	return kitutil.MaskSensitiveInfo(errStr)
 }
@@ -201,7 +206,11 @@ func (e *NewAPIError) ToOpenAIError() OpenAIError {
 			Code:    e.errorCode,
 		}
 	}
-	if e.errorCode != ErrorCodeCountTokenFailed {
+	// count-token 错误刻意保留可读信息供定位，但凭据类值仍须脱敏；
+	// 其余错误走完整 MaskSensitiveInfo（URL/域名/IP + 凭据）。
+	if e.errorCode == ErrorCodeCountTokenFailed {
+		result.Message = kitutil.RedactCredentials(result.Message)
+	} else {
 		result.Message = kitutil.MaskSensitiveInfo(result.Message)
 	}
 	if result.Message == "" {
@@ -230,7 +239,9 @@ func (e *NewAPIError) ToClaudeError() ClaudeError {
 			Type:    string(e.errorType),
 		}
 	}
-	if e.errorCode != ErrorCodeCountTokenFailed {
+	if e.errorCode == ErrorCodeCountTokenFailed {
+		result.Message = kitutil.RedactCredentials(result.Message)
+	} else {
 		result.Message = kitutil.MaskSensitiveInfo(result.Message)
 	}
 	if result.Message == "" {
@@ -396,12 +407,37 @@ func ErrOptionWithStatusCode(statusCode int) NewAPIErrorOptions {
 	}
 }
 
+// hiddenMessageError 对外隐藏原始错误文案，但保留错误链供 errors.As/Is
+// 与内部错误分类（如 relay/common.ClassifySubmitError、relay.classifyErrorKind）
+// 识别底层原因（超时 / 连接重置 / 拨号失败等）。客户可见文案始终为隐藏后的
+// replaceStr，不得回显上游错误原文；内部分类只读类型与关键字，不落原文。
+type hiddenMessageError struct {
+	msg   string
+	cause error
+}
+
+func (h *hiddenMessageError) Error() string {
+	if h == nil {
+		return ""
+	}
+	return h.msg
+}
+
+func (h *hiddenMessageError) Unwrap() error {
+	if h == nil {
+		return nil
+	}
+	return h.cause
+}
+
 func ErrOptionWithHideErrMsg(replaceStr string) NewAPIErrorOptions {
 	return func(e *NewAPIError) {
 		if kitutil.Debug.Load() {
 			fmt.Printf("ErrOptionWithHideErrMsg: %s, origin error: %s", replaceStr, e.Err)
 		}
-		e.Err = errors.New(replaceStr)
+		// 只替换对外展示的文案，保留原始错误链（Unwrap 可达），
+		// 避免超时/连接错误被识别成未知类型（outcome_unknown: other）。
+		e.Err = &hiddenMessageError{msg: replaceStr, cause: e.Err}
 	}
 }
 

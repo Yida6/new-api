@@ -21,6 +21,16 @@ const (
 	SystemTaskTypeModelUpdate    = "model_update"
 	SystemTaskTypeMidjourneyPoll = "midjourney_poll"
 	SystemTaskTypeAsyncTaskPoll  = "async_task_poll"
+	// SystemTaskTypeSeedanceConcurrencyReconcile 定期对账单用户 Seedance 并发名额计数，
+	// 兜底清理异常退出（进程崩溃等）导致的泄漏名额与重复释放造成的计数偏差。
+	SystemTaskTypeSeedanceConcurrencyReconcile = "seedance_concurrency_reconcile"
+	// SystemTaskTypeSeedanceDebtAlert 定期重试发送未成功的 Seedance 欠款告警
+	// （多实例原子 claim，见 model.ClaimDebtAlert）。
+	SystemTaskTypeSeedanceDebtAlert = "seedance_debt_alert"
+	// SystemTaskTypeSeedanceTokenCompensation 定期幂等补偿"资金已收、Token 未扣"
+	// 的 Seedance 结算差额（task.token_delta_pending > 0，见
+	// model.CompensatePendingTokenDeltas）。空闲（无待补偿记录）不产生任务行。
+	SystemTaskTypeSeedanceTokenCompensation = "seedance_token_compensation"
 )
 
 var ErrSystemTaskLockLost = errors.New("system task lock lost")

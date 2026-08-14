@@ -30,6 +30,14 @@ type PriceData struct {
 	Quota                int // 按次计费的最终额度（MJ / Task）
 	QuotaToPreConsume    int // 按量计费的预消耗额度
 	GroupRatioInfo       GroupRatioInfo
+
+	// PreConsumeMultiplier 仅预扣缓冲（>0）：只用于提交前保守预留的最大成本
+	// 放大，**绝不**进入真实结算（真实结算倍率只来自 otherRatios）。
+	// Seedance 时长缓冲（duration/5）与无价格表模型的保守系数放在这里；
+	// 固定价格模式（UsePrice）下费用固定、无超支风险，本字段保持 1.0。
+	// 轮询结算（computeTaskQuotaByTokens）只读 otherRatios，二者语义分离，
+	// 杜绝"预扣缓冲再次乘入 totalTokens"的重复计费。
+	PreConsumeMultiplier float64
 }
 
 func (p *PriceData) AddOtherRatio(key string, ratio float64) {

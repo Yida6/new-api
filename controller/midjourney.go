@@ -213,22 +213,25 @@ func runMidjourneyTaskUpdateOnce(ctx context.Context, report func(processed, tot
 			if err != nil {
 				logger.LogError(ctx, "UpdateMidjourneyTask task error: "+err.Error())
 			} else if won && shouldReturnQuota {
-				err = model.IncreaseUserQuota(task.UserId, task.Quota, false)
-				if err != nil {
-					logger.LogError(ctx, "fail to increase user quota: "+err.Error())
+				// 原子完成：钱包退款 + 用户/渠道累计消耗冲减（统计从未写入的任务
+				// 跳过冲减，避免 used_quota >= refund 守卫死锁）；守卫失败或任一步
+				// 失败整体回滚，由历史修复脚本对账累计消耗后再人工处理。
+				if !model.ApplyWalletRefundUsedQuota(task.UserId, task.ChannelId, task.Quota, !task.BillingStatsFailed) {
+					logger.LogError(ctx, fmt.Sprintf("构图失败退款失败 task %s，请运行历史修复脚本对账", task.MjId))
+				} else if task.ConsumeLogRecorded {
+					model.RecordTaskBillingLog(model.RecordTaskBillingLogParams{
+						UserId:    task.UserId,
+						LogType:   model.LogTypeRefund,
+						Content:   "",
+						ChannelId: task.ChannelId,
+						ModelName: service.CovertMjpActionToModelName(task.Action),
+						Quota:     task.Quota,
+						Other: map[string]interface{}{
+							"task_id": task.MjId,
+							"reason":  "构图失败",
+						},
+					})
 				}
-				model.RecordTaskBillingLog(model.RecordTaskBillingLogParams{
-					UserId:    task.UserId,
-					LogType:   model.LogTypeRefund,
-					Content:   "",
-					ChannelId: task.ChannelId,
-					ModelName: service.CovertMjpActionToModelName(task.Action),
-					Quota:     task.Quota,
-					Other: map[string]interface{}{
-						"task_id": task.MjId,
-						"reason":  "构图失败",
-					},
-				})
 			}
 		}
 	}

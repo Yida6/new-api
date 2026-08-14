@@ -22,6 +22,9 @@ func RegisterScheduledSystemTasks() {
 	service.RegisterSystemTaskHandler(modelUpdateHandler{})
 	service.RegisterSystemTaskHandler(midjourneyPollHandler{})
 	service.RegisterSystemTaskHandler(asyncTaskPollHandler{})
+	service.RegisterSystemTaskHandler(seedanceConcurrencyReconcileHandler{})
+	service.RegisterSystemTaskHandler(seedanceDebtAlertHandler{})
+	service.RegisterSystemTaskHandler(seedanceTokenCompensationHandler{})
 }
 
 // channelTestHandler runs the scheduled "test all channels" job. Enablement and
@@ -150,6 +153,75 @@ func (asyncTaskPollHandler) NewPayload() any { return nil }
 func (asyncTaskPollHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
 	summary := service.RunTaskPollingOnce(ctx, service.NewSystemTaskProgressReporter(task, runnerID))
 	finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusSucceeded, summary, nil)
+}
+
+// seedanceConcurrencyReconcileHandler 定期对账 Seedance 并发名额计数：
+// 进程异常退出留下的泄漏名额、以及轮询/兜底路径重复释放造成的计数偏差，
+// 都会被修正为"真实运行任务数"。仅在启用并发限制时注册，避免空闲系统产生任务行。
+type seedanceConcurrencyReconcileHandler struct{}
+
+func (seedanceConcurrencyReconcileHandler) Type() string {
+	return model.SystemTaskTypeSeedanceConcurrencyReconcile
+}
+
+func (seedanceConcurrencyReconcileHandler) Enabled() bool {
+	return constant.SeedanceMaxConcurrentTasks > 0
+}
+
+func (seedanceConcurrencyReconcileHandler) Interval() time.Duration { return 5 * time.Minute }
+
+func (seedanceConcurrencyReconcileHandler) NewPayload() any { return nil }
+
+func (seedanceConcurrencyReconcileHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
+	service.ReconcileTaskConcurrencySlots()
+	finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusSucceeded, nil, nil)
+}
+
+// seedanceDebtAlertHandler 定期重试发送未成功的 Seedance 欠款告警：
+// 多实例并发时由 model.ClaimDebtAlert 原子 claim 去重，发送失败/未配置通知
+// 渠道时释放 claim 保留重试。Enabled 仅在存在待发送欠款时成立，空闲系统不
+// 产生任务行。
+type seedanceDebtAlertHandler struct{}
+
+func (seedanceDebtAlertHandler) Type() string { return model.SystemTaskTypeSeedanceDebtAlert }
+
+func (seedanceDebtAlertHandler) Enabled() bool { return model.HasPendingDebtAlerts() }
+
+func (seedanceDebtAlertHandler) Interval() time.Duration { return 5 * time.Minute }
+
+func (seedanceDebtAlertHandler) NewPayload() any { return nil }
+
+func (seedanceDebtAlertHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
+	sent := service.RetryPendingDebtAlerts()
+	finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusSucceeded, map[string]int{"sent": sent}, nil)
+}
+
+// seedanceTokenCompensationHandler 定期幂等补偿"资金已收、Token 未扣"的
+// Seedance 结算差额（task.token_delta_pending > 0）。补偿在事务内条件扣减
+// Token（remain_quota >= pending 守卫）并清零标记，成功清零是唯一出路，
+// 余额不足/令牌缺失保留标记下轮再试，绝不重复扣款。Enabled 仅在存在待补偿
+// 记录时成立，空闲系统不产生任务行。
+type seedanceTokenCompensationHandler struct{}
+
+func (seedanceTokenCompensationHandler) Type() string {
+	return model.SystemTaskTypeSeedanceTokenCompensation
+}
+
+func (seedanceTokenCompensationHandler) Enabled() bool {
+	return model.HasTasksWithPendingTokenDelta()
+}
+
+func (seedanceTokenCompensationHandler) Interval() time.Duration { return 5 * time.Minute }
+
+func (seedanceTokenCompensationHandler) NewPayload() any { return nil }
+
+func (seedanceTokenCompensationHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
+	compensated, err := model.CompensatePendingTokenDeltas(100)
+	if err != nil {
+		finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusFailed, nil, err)
+		return
+	}
+	finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusSucceeded, map[string]int{"compensated": compensated}, nil)
 }
 
 func finishSystemTaskHandler(task *model.SystemTask, runnerID string, status model.SystemTaskStatus, result any, runErr error) {

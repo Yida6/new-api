@@ -84,7 +84,7 @@ func GetLogByKey(c *gin.Context) {
 	if err != nil {
 		c.JSON(200, gin.H{
 			"success": false,
-			"message": err.Error(),
+			"message": common.RedactCredentials(err.Error()),
 		})
 		return
 	}

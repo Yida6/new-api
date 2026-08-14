@@ -58,12 +58,24 @@ type Task struct {
 	Action     string                `json:"action" gorm:"type:varchar(40);index"` // 任务类型, song, lyrics, description-mode
 	Status     TaskStatus            `json:"status" gorm:"type:varchar(20);index"` // 任务状态
 	FailReason string                `json:"fail_reason"`
-	SubmitTime int64                 `json:"submit_time" gorm:"index"`
-	StartTime  int64                 `json:"start_time" gorm:"index"`
-	FinishTime int64                 `json:"finish_time" gorm:"index"`
-	Progress   string                `json:"progress" gorm:"type:varchar(20);index"`
-	Properties Properties            `json:"properties" gorm:"type:json"`
-	Username   string                `json:"username,omitempty" gorm:"-"`
+	// ConcurrencyReleased 标记该任务的 Seedance 并发名额是否已释放（幂等标记，不对外暴露）。
+	// 同一任务可能被多个终态处理路径（单任务轮询/超时清理/批量失败）并发处理，
+	// 只有第一个成功抢到标记（false→true）的路径才真正递减计数，杜绝重复释放。
+	ConcurrencyReleased bool `json:"-" gorm:"column:concurrency_released;default:false"`
+	// TokenDeltaPending 成功差额补扣后 Token 额度尚未扣减的差额（>0 表示待补偿）。
+	// 资金与 Token 无法在同一事务原子化时的持久化恢复信息：补偿路径
+	// （model.CompensatePendingTokenDeltas）按该值幂等扣减 Token，成功清零，
+	// 绝不做"best effort 后丢失状态"。置于表顶层（非 JSON）以便 SQL 查询。
+	// 对外暴露（管理端任务查询可见）：pending>0 且 TokenId<=0 的异常记录
+	// 由管理员人工处理（见 CompensatePendingTokenDeltas 问题四注释），
+	// 不得静默清零。
+	TokenDeltaPending int    `json:"token_delta_pending" gorm:"column:token_delta_pending;default:0;index"`
+	SubmitTime        int64  `json:"submit_time" gorm:"index"`
+	StartTime           int64      `json:"start_time" gorm:"index"`
+	FinishTime          int64      `json:"finish_time" gorm:"index"`
+	Progress            string     `json:"progress" gorm:"type:varchar(20);index"`
+	Properties          Properties `json:"properties" gorm:"type:json"`
+	Username            string     `json:"username,omitempty" gorm:"-"`
 	// 禁止返回给用户，内部可能包含key等隐私信息
 	PrivateData TaskPrivateData `json:"-" gorm:"column:private_data;type:json"`
 	Data        json.RawMessage `json:"data" gorm:"type:json"`
@@ -82,6 +94,18 @@ type Properties struct {
 	Input             string `json:"input"`
 	UpstreamModelName string `json:"upstream_model_name,omitempty"`
 	OriginModelName   string `json:"origin_model_name,omitempty"`
+}
+
+// Sanitized returns a client-safe copy of Properties with provider-internal
+// identifiers removed. UpstreamModelName holds the channel's mapped upstream
+// model name, which for some providers (e.g. Volcano Engine Ark) is the
+// Endpoint ID ("ep-xxxx") and must never be exposed in client-facing task
+// details. Storage and internal flows (e.g. ResolveOriginTask) keep reading the
+// original value; only the serialized copy is sanitized. The field is omitted
+// from JSON when empty (omitempty), so the sanitized copy serializes without it.
+func (p Properties) Sanitized() Properties {
+	p.UpstreamModelName = ""
+	return p
 }
 
 func (m *Properties) Scan(val interface{}) error {
@@ -104,12 +128,26 @@ type TaskPrivateData struct {
 	Key            string `json:"key,omitempty"`
 	UpstreamTaskID string `json:"upstream_task_id,omitempty"` // 上游真实 task ID
 	ResultURL      string `json:"result_url,omitempty"`       // 任务成功后的结果 URL（视频地址等）
+	// IdempotencyKey 记录创建该任务时使用的幂等键（UUID v4）。
+	// 与任务参数、任务状态一起持久化：进程重启后仍可通过该键与查询接口确认
+	// 该任务是否已在上游创建，避免用新键重复提交产生重复任务。
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
 	// 计费上下文：用于异步退款/差额结算（轮询阶段读取）
 	BillingSource  string              `json:"billing_source,omitempty"`  // "wallet" 或 "subscription"
 	SubscriptionId int                 `json:"subscription_id,omitempty"` // 订阅 ID，用于订阅退款
 	TokenId        int                 `json:"token_id,omitempty"`        // 令牌 ID，用于令牌额度退款
 	NodeName       string              `json:"node_name,omitempty"`       // 发起任务的节点名，轮询结算阶段据此归属日志而非最后查询节点
 	BillingContext *TaskBillingContext `json:"billing_context,omitempty"` // 计费参数快照（用于轮询阶段重新计算）
+	// ConsumeLogRecorded 记录提交时是否写入了消费日志（受 LogConsumeEnabled 影响）。
+	// 结算/退款时据此决定是否写计费调整日志，避免开关在提交与结算之间切换导致
+	// "有消费无退款"或"有退款无消费"的日志口径不对称。
+	ConsumeLogRecorded bool `json:"consume_log_recorded,omitempty"`
+	// BillingStatsFailed 标记提交时的累计统计写入失败（ApplyPreConsumeUsedQuota
+	// 失败：用户/渠道行缺失或数据库错误）。此时本地仍创建任务行（上游已创建、
+	// 资金已预扣，绝不能"收费但任务丢失"），但 used_quota / request_count 从未
+	// 累加；退款方向结算时必须跳过累计消耗冲减（否则 used_quota >= refund 守卫
+	// 永久卡死），由本字段驱动（见 ApplyTaskQuotaDelta）。
+	BillingStatsFailed bool `json:"billing_stats_failed,omitempty"`
 }
 
 // TaskBillingContext 记录任务提交时的计费参数，以便轮询阶段可以重新计算额度。
@@ -117,9 +155,13 @@ type TaskBillingContext struct {
 	ModelPrice      float64            `json:"model_price,omitempty"`       // 模型单价
 	GroupRatio      float64            `json:"group_ratio,omitempty"`       // 分组倍率
 	ModelRatio      float64            `json:"model_ratio,omitempty"`       // 模型倍率
-	OtherRatios     map[string]float64 `json:"other_ratios,omitempty"`      // 附加倍率（时长、分辨率等）
+	OtherRatios     map[string]float64 `json:"other_ratios,omitempty"`      // 附加倍率（分辨率、输入等**定价倍率**；不含时长预扣缓冲）
 	OriginModelName string             `json:"origin_model_name,omitempty"` // 模型名称，必须为OriginModelName
 	PerCallBilling  bool               `json:"per_call_billing,omitempty"`  // 按次计费：跳过轮询阶段的差额结算
+	// PreConsumeMultiplier 提交时的仅预扣缓冲（Seedance 时长/无表模型保守系数）。
+	// 只用于审计与对账：真实 Token 结算**绝不**再乘它（结算只读 OtherRatios）。
+	// 固定价格模式为 0（无缓冲）。
+	PreConsumeMultiplier float64 `json:"pre_consume_multiplier,omitempty"`
 }
 
 // GetUpstreamTaskID 获取上游真实 task ID（用于与 provider 通信）
@@ -196,6 +238,12 @@ func InitTask(platform constant.TaskPlatform, relayInfo *commonRelay.RelayInfo) 
 		taskID = relayInfo.TaskRelayInfo.PublicTaskID
 	} else {
 		taskID = GenerateTaskID()
+	}
+
+	// 持久化幂等键：由控制器在进入重试循环前生成，随任务一起落库，
+	// 供重启后查询确认 / 排查重复创建使用。
+	if relayInfo.TaskRelayInfo != nil && relayInfo.TaskRelayInfo.IdempotencyKey != "" {
+		privateData.IdempotencyKey = relayInfo.TaskRelayInfo.IdempotencyKey
 	}
 
 	t := &Task{

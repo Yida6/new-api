@@ -127,6 +127,12 @@ func SetApiRouter(router *gin.Engine) {
 				// Custom OAuth bindings
 				selfRoute.GET("/oauth/bindings", controller.GetUserOAuthBindings)
 				selfRoute.DELETE("/oauth/bindings/:provider_id", controller.UnbindCustomOAuth)
+
+				// 任务恢复入口（outcome_unknown 的人工确认与恢复）
+				selfRoute.GET("/task_recovery", middleware.DisableCache(), controller.GetTaskRecoveries)
+				selfRoute.POST("/task_recovery/:id/associate", middleware.DisableCache(), controller.AssociateTaskRecovery)
+				selfRoute.POST("/task_recovery/:id/discover", middleware.DisableCache(), controller.DiscoverTaskRecoveryCandidates)
+				selfRoute.POST("/task_recovery/:id/recreate", middleware.DisableCache(), controller.RecreateTaskRecovery)
 			}
 
 			adminRoute := userRoute.Group("/")
@@ -149,6 +155,13 @@ func SetApiRouter(router *gin.Engine) {
 				// Admin 2FA routes
 				adminRoute.GET("/2fa/stats", controller.Admin2FAStats)
 				adminRoute.DELETE("/:id/2fa", controller.AdminDisable2FA)
+
+				// Seedance 欠款管理（清偿/核销/解冻/审计；gin 静态路由优先于 /:id）
+				adminRoute.GET("/debt", controller.AdminListTaskDebts)
+				adminRoute.POST("/debt/:id/repay", controller.AdminRepayTaskDebt)
+				adminRoute.POST("/debt/:id/void", controller.AdminVoidTaskDebt)
+				adminRoute.POST("/debt/:id/unfreeze", controller.AdminUnfreezeUserDebt)
+				adminRoute.GET("/debt/audits", controller.AdminListTaskDebtAudits)
 			}
 		}
 

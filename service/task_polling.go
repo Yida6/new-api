@@ -82,9 +82,26 @@ func sweepTimedOutTasks(ctx context.Context) {
 			continue
 		}
 		timedOutCount++
-		if !isLegacy && task.Quota != 0 {
-			RefundTaskQuota(ctx, task, reason)
+		// 先退款再释放名额：若退款失败会把任务回退到非终态重试，此时名额必须
+		// 继续占用（否则任务重跑期间不计入并发限制，且终态成功时也无法再释放，
+		// 造成计数失真）。
+		refundOK := isLegacy || task.Quota == 0
+		if !refundOK {
+			refundOK = RefundTaskQuota(ctx, task, reason)
 		}
+		if !refundOK {
+			logger.LogError(ctx, fmt.Sprintf("sweepTimedOutTasks refund failed for task %s, reverting status for retry", task.TaskID))
+			task.Status = oldStatus
+			task.Progress = ""
+			task.FinishTime = 0
+			task.FailReason = ""
+			if err := task.Update(); err != nil {
+				logger.LogError(ctx, fmt.Sprintf("failed to revert task %s status: %s", task.TaskID, err.Error()))
+			}
+			continue
+		}
+		// 任务被置为终态（超时失败）且退款成功（或无需退款）：释放并发名额
+		ReleaseTaskSlotIfSeedance(task)
 	}
 
 	if timedOutCount > 0 {
@@ -304,7 +321,13 @@ func updateSunoTasks(ctx context.Context, channelId int, taskIds []string, taskM
 		} else if !won {
 			logger.LogWarn(ctx, fmt.Sprintf("Task %s CAS lost or no-op update, skip billing", task.TaskID))
 		} else if isFailure && prevStatus != model.TaskStatusFailure && task.Quota != 0 {
-			RefundTaskQuota(ctx, task, task.FailReason)
+			if !RefundTaskQuota(ctx, task, task.FailReason) {
+				logger.LogError(ctx, fmt.Sprintf("UpdateSunoTask refund failed for task %s, reverting status for retry", task.TaskID))
+				task.Status = prevStatus
+				if err := task.Update(); err != nil {
+					logger.LogError(ctx, fmt.Sprintf("failed to revert task %s status: %s", task.TaskID, err.Error()))
+				}
+			}
 		}
 	}
 	return nil
@@ -403,6 +426,15 @@ func updateVideoTasks(ctx context.Context, platform constant.TaskPlatform, chann
 		})
 		if errUpdate != nil {
 			common.SysLog(fmt.Sprintf("UpdateVideoTask error: %v", errUpdate))
+		} else {
+			// 批量置为终态成功：释放这些任务占用的 Seedance 并发名额。
+			// 仅释放"轮询加载时仍非终态"的任务，避免与 sweep/单任务轮询路径
+			// 重复释放（重复释放即使发生，也会被对账任务回补）。
+			for _, upstreamID := range taskIds {
+				if t, ok := taskM[upstreamID]; ok && model.IsTaskRunningStatus(t.Status) {
+					ReleaseTaskSlotIfSeedance(t)
+				}
+			}
 		}
 		return fmt.Errorf("CacheGetChannel failed: %w", err)
 	}
@@ -571,6 +603,7 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 	}
 
 	isDone := task.Status == model.TaskStatusSuccess || task.Status == model.TaskStatusFailure
+	terminalTransitioned := false // 本次调用 CAS 胜出且已把任务持久化为终态
 	if isDone && snap.Status != task.Status {
 		won, err := task.UpdateWithStatus(snap.Status)
 		if err != nil {
@@ -581,6 +614,11 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 			logger.LogWarn(ctx, fmt.Sprintf("Task %s CAS lost or no-op update, skip billing", task.TaskID))
 			shouldRefund = false
 			shouldSettle = false
+		} else {
+			// CAS 胜出且任务到达终态（成功/失败）。并发名额先不释放：若下方计费
+			// 失败会把任务回退到非终态重试，名额必须继续占用；只有"终态确立且
+			// 计费成功"才释放（见 billingOK 分支），避免计数失真。
+			terminalTransitioned = true
 		}
 	} else if !snap.Equal(task.Snapshot()) {
 		if _, err := task.UpdateWithStatus(snap.Status); err != nil {
@@ -591,11 +629,45 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 		logger.LogDebug(ctx, "No update needed for task %s", task.TaskID)
 	}
 
+	billingOK := true
 	if shouldSettle {
-		settleTaskBillingOnComplete(ctx, adaptor, task, taskResult)
+		if IsSeedanceTask(task) {
+			// Seedance 专用结算：差额补扣带原子余额守卫；余额不足时进入
+			// 欠款/冻结/告警闭环（DebtCreated），任务仍进入终态（上游生命周期
+			// 与计费生命周期分离），并发名额正常释放，绝不伪装成运行中任务。
+			// 只有数据库错误（Retryable）才回退非终态重试。
+			switch SettleSeedanceTaskBilling(ctx, adaptor, task, taskResult) {
+			case SeedanceSettleSuccess, SeedanceSettleDebtCreated:
+				// 结算完成或欠款已闭环：任务可确立终态
+			default:
+				billingOK = false
+			}
+		} else {
+			billingOK = settleTaskBillingOnComplete(ctx, adaptor, task, taskResult) && billingOK
+		}
 	}
 	if shouldRefund {
-		RefundTaskQuota(ctx, task, task.FailReason)
+		billingOK = RefundTaskQuota(ctx, task, task.FailReason) && billingOK
+	}
+	if !billingOK {
+		// 计费失败但任务已转终态：回退到非终态，使下一轮轮询重新结算/退款。
+		// task.Quota 未清零（ApplyTaskQuotaDelta 失败保留），重试幂等。
+		// 并发名额同样保留：任务回退为非终态后仍计入并发限制，杜绝
+		// "ConcurrencyReleased 已置位但任务仍在运行"的计数失真。
+		logger.LogError(ctx, fmt.Sprintf("task %s billing failed, reverting to non-terminal for retry", task.TaskID))
+		task.Status = snap.Status
+		task.Progress = snap.Progress
+		task.StartTime = snap.StartTime
+		task.FinishTime = snap.FinishTime
+		task.FailReason = snap.FailReason
+		task.PrivateData.ResultURL = snap.ResultURL
+		task.Data = snap.Data
+		if err := task.Update(); err != nil {
+			logger.LogError(ctx, fmt.Sprintf("failed to revert task %s status: %s", task.TaskID, err.Error()))
+		}
+	} else if terminalTransitioned {
+		// 终态已确立且计费成功：释放该任务占用的 Seedance 并发名额
+		ReleaseTaskSlotIfSeedance(task)
 	}
 
 	return nil
@@ -640,21 +712,20 @@ func truncateBase64(s string) string {
 //
 //  2. taskResult.TotalTokens > 0 → 按 token 重算
 //  3. 都不满足 → 保持预扣额度不变
-func settleTaskBillingOnComplete(ctx context.Context, adaptor TaskPollingAdaptor, task *model.Task, taskResult *relaycommon.TaskInfo) {
+func settleTaskBillingOnComplete(ctx context.Context, adaptor TaskPollingAdaptor, task *model.Task, taskResult *relaycommon.TaskInfo) bool {
 	// 0. 按次计费的任务不做差额结算
 	if bc := task.PrivateData.BillingContext; bc != nil && bc.PerCallBilling {
 		logger.LogInfo(ctx, fmt.Sprintf("任务 %s 按次计费，跳过差额结算", task.TaskID))
-		return
+		return true
 	}
 	// 1. 优先让 adaptor 决定最终额度
 	if actualQuota := adaptor.AdjustBillingOnComplete(task, taskResult); actualQuota > 0 {
-		RecalculateTaskQuota(ctx, task, actualQuota, "adaptor计费调整")
-		return
+		return RecalculateTaskQuota(ctx, task, actualQuota, "adaptor计费调整")
 	}
 	// 2. 回退到 token 重算
 	if taskResult.TotalTokens > 0 {
-		RecalculateTaskQuotaByTokens(ctx, task, taskResult.TotalTokens)
-		return
+		return RecalculateTaskQuotaByTokens(ctx, task, taskResult.TotalTokens)
 	}
 	// 3. 无调整，保持预扣额度
+	return true
 }

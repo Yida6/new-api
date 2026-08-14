@@ -198,6 +198,24 @@ func initConstantEnv() {
 	constant.TaskQueryLimit = GetEnvOrDefault("TASK_QUERY_LIMIT", 1000)
 	// 异步任务超时时间（分钟），超过此时间未完成的任务将被标记为失败并退款。0 表示禁用。
 	constant.TaskTimeoutMinutes = GetEnvOrDefault("TASK_TIMEOUT_MINUTES", 1440)
+	// 单个用户同时运行 Seedance 任务的上限（默认 3，0 或负数 = 不限制）。
+	constant.SeedanceMaxConcurrentTasks = GetEnvOrDefault("SEEDANCE_MAX_CONCURRENT_TASKS", 3)
+	// 并发名额对账的过期阈值（分钟，默认 30）。
+	constant.SeedanceConcurrencyReconcileTTLMinutes = GetEnvOrDefault("SEEDANCE_CONCURRENCY_RECONCILE_TTL_MINUTES", 30)
+	constant.SeedanceDailyCostAlertUSD = getEnvOrDefaultNonNegativeFloat("SEEDANCE_DAILY_COST_ALERT_USD", 0)
+	constant.SeedanceDailyCostLimitUSD = getEnvOrDefaultNonNegativeFloat("SEEDANCE_DAILY_COST_LIMIT_USD", 0)
+	if constant.SeedanceDailyCostLimitUSD > 0 && constant.SeedanceDailyCostAlertUSD > constant.SeedanceDailyCostLimitUSD {
+		SysError("SEEDANCE_DAILY_COST_ALERT_USD exceeds SEEDANCE_DAILY_COST_LIMIT_USD; clamping alert threshold to the hard limit")
+		constant.SeedanceDailyCostAlertUSD = constant.SeedanceDailyCostLimitUSD
+	}
+	// Seedance 保守预扣：无价格表模型的预扣系数（默认 2.0）与本地允许的最大时长（默认 10 秒）。
+	// 契约依据见 relay/channel/task/doubao/constants.go 文件头注释。
+	constant.SeedanceUnpricedCostMultiplier = getEnvOrDefaultNonNegativeFloat("SEEDANCE_UNPRICED_COST_MULTIPLIER", 2.0)
+	constant.SeedanceMaxSupportedDurationSeconds = GetEnvOrDefault("SEEDANCE_MAX_SUPPORTED_DURATION_SECONDS", 10)
+	if constant.SeedanceMaxSupportedDurationSeconds < 5 {
+		SysError("SEEDANCE_MAX_SUPPORTED_DURATION_SECONDS below 5 is not allowed; clamping to 5")
+		constant.SeedanceMaxSupportedDurationSeconds = 5
+	}
 
 	soraPatchStr := GetEnvOrDefaultString("TASK_PRICE_PATCH", "")
 	if soraPatchStr != "" {
@@ -224,4 +242,17 @@ func initConstantEnv() {
 		}
 	}
 	constant.TrustedRedirectDomains = trustedDomains
+}
+
+func getEnvOrDefaultNonNegativeFloat(name string, defaultValue float64) float64 {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return defaultValue
+	}
+	value, err := strconv.ParseFloat(raw, 64)
+	if err != nil || math.IsNaN(value) || math.IsInf(value, 0) || value < 0 {
+		SysError(fmt.Sprintf("failed to parse %s as a non-negative number, using default value: %g", name, defaultValue))
+		return defaultValue
+	}
+	return value
 }

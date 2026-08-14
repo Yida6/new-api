@@ -172,15 +172,21 @@ func main() {
 
 	// Initialize HTTP server
 	server := gin.New()
+	// 禁用 gin 的 trailing-slash 自动重定向：
+	// 路由树存在 /:mode/mj 参数路由时，任何单段路径 /X/ 都会被误判 tsr 并 301 去斜杠，
+	// 与 http.FileServer 的目录重定向（/docs → docs/）叠加形成 /docs/ 死循环。
+	// 静态目录由 static.Serve 中间件直接处理，不需要 gin 自动修复尾斜杠。
+	server.RedirectTrailingSlash = false
 	if err := middleware.ConfigureTrustedProxies(server); err != nil {
 		common.FatalLog("failed to configure trusted proxies: " + err.Error())
 		return
 	}
 	server.Use(gin.CustomRecovery(func(c *gin.Context, err any) {
-		common.SysLog(fmt.Sprintf("panic detected: %v", err))
+		errMsg := common.RedactCredentials(fmt.Sprintf("%v", err))
+		common.SysLog("panic detected: " + errMsg)
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": gin.H{
-				"message": fmt.Sprintf("Panic detected, error: %v. Please submit a issue here: https://github.com/Calcium-Ion/new-api", err),
+				"message": fmt.Sprintf("Panic detected, error: %s. Please submit a issue here: https://github.com/Calcium-Ion/new-api", errMsg),
 				"type":    "new_api_panic",
 			},
 		})

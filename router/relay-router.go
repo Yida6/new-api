@@ -25,7 +25,7 @@ func SetRelayRouter(router *gin.Engine) {
 			case c.GetHeader("x-api-key") != "" && c.GetHeader("anthropic-version") != "":
 				controller.ListModels(c, constant.ChannelTypeAnthropic)
 			case c.GetHeader("x-goog-api-key") != "" || c.Query("key") != "": // 单独的适配
-				controller.RetrieveModel(c, constant.ChannelTypeGemini)
+				controller.ListModels(c, constant.ChannelTypeGemini)
 			default:
 				controller.ListModels(c, constant.ChannelTypeOpenAI)
 			}
@@ -206,7 +206,16 @@ func SetRelayRouter(router *gin.Engine) {
 }
 
 func registerMjRouterGroup(relayMjRouter *gin.RouterGroup) {
-	relayMjRouter.GET("/image/:id", relay.RelayMidjourneyImage)
+	// /image/:id 提供任务生成图片的代理访问，必须强制鉴权（禁止匿名获取）。
+	// 使用 TokenOrUserAuth：同时接受 dashboard 会话与 API 令牌（与
+	// /v1/videos/:task_id/content 一致），所有权校验在 handler 内完成。
+	// 注意：必须在下方 TokenAuth() Use 之前单独注册，因为该路由既要 API
+	// 令牌也要 dashboard 会话，而其余 /mj 提交路由只接受 API 令牌。
+	relayMjImageRouter := relayMjRouter.Group("")
+	relayMjImageRouter.Use(middleware.TokenOrUserAuth())
+	{
+		relayMjImageRouter.GET("/image/:id", relay.RelayMidjourneyImage)
+	}
 	relayMjRouter.Use(middleware.TokenAuth(), middleware.Distribute())
 	{
 		relayMjRouter.POST("/submit/action", controller.RelayMidjourney)

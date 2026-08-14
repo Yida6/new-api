@@ -290,6 +290,12 @@ func migrateDB() error {
 		&SystemInstance{},
 		&SystemTask{},
 		&SystemTaskLock{},
+		&TaskSubmitRecovery{},
+		&TaskSubmitLockRow{},
+		&TaskConcurrencySlot{},
+		&TaskBillingDebt{},
+		&TaskBillingDebtAudit{},
+		&SeedanceCostControl{},
 		&CasbinRule{},
 		&AuthzRole{},
 	)
@@ -815,13 +821,14 @@ func PingDB() error {
 
 	sqlDB, err := DB.DB()
 	if err != nil {
-		log.Printf("Error getting sql.DB from GORM: %v", err)
+		// 标准库 log 出口不经过 logger.logHelper/SysLog，直接脱敏凭据类值。
+		log.Printf("Error getting sql.DB from GORM: %s", common.RedactCredentials(err.Error()))
 		return err
 	}
 
 	err = sqlDB.Ping()
 	if err != nil {
-		log.Printf("Error pinging DB: %v", err)
+		log.Printf("Error pinging DB: %s", common.RedactCredentials(err.Error()))
 		return err
 	}
 

@@ -2,6 +2,7 @@ package model
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"strings"
@@ -98,8 +99,30 @@ func ensureLogRequestId(log *Log) {
 	}
 }
 
+// sanitizeLogForStorage 在日志落盘前统一脱敏凭据类值（方舟 Endpoint ID /
+// API Key / Bearer Token / 凭据键值对），确保数据库不原样存储凭据。
+// 与读取视图（redactLogOther）不同，此处不剥离 upstream_model_name /
+// admin_info / audit_info 等排障字段，仅掩凭据；视图层仍会做二次剥离。
+func sanitizeLogForStorage(log *Log) {
+	if log == nil {
+		return
+	}
+	log.Content = common.RedactCredentials(log.Content)
+	log.ModelName = common.RedactCredentials(log.ModelName)
+	if log.Other != "" {
+		if otherMap, _ := common.StrToMap(log.Other); otherMap != nil {
+			redactSensitiveMapValues(otherMap)
+			log.Other = common.MapToJsonStr(otherMap)
+		} else {
+			// 畸形 other（裸字符串/数组）无法按结构脱敏时，对原始文本兜底脱敏。
+			log.Other = common.RedactCredentials(log.Other)
+		}
+	}
+}
+
 func createLog(log *Log) error {
 	ensureLogRequestId(log)
+	sanitizeLogForStorage(log)
 	return LOG_DB.Create(log).Error
 }
 
@@ -116,19 +139,104 @@ func assignDisplayLogIds(logs []*Log, startIdx int) {
 func formatUserLogs(logs []*Log, startIdx int) {
 	for i := range logs {
 		logs[i].ChannelName = ""
-		var otherMap map[string]interface{}
-		otherMap, _ = common.StrToMap(logs[i].Other)
-		if otherMap != nil {
+		redactLogOther(logs[i], false)
+	}
+	assignDisplayLogIds(logs, startIdx)
+}
+
+// redactLogOther 清理单条日志的 Other 与 Content 字段：
+//   - 始终移除 other.upstream_model_name（可能为方舟 Endpoint ID "ep-xxxx"），
+//     并对剩余字段中的凭据类值（Endpoint ID / API Key / Bearer Token）脱敏；
+//   - 日志主体 Content 同样脱敏（历史错误日志可能含上游错误原文）；
+//   - 历史畸形日志（other 无法解析为 JSON 对象，如裸字符串/数组）直接对
+//     原始文本兜底脱敏，杜绝绕过；
+//   - keepAdmin=false 时同时移除仅管理员可见的 admin_info / audit_info。
+//
+// 无论用户还是管理员视图，Endpoint ID 与 API Key 都不通过 API 暴露；
+// 落盘前 sanitizeLogForStorage 已统一脱敏凭据，此处兜底覆盖历史原样数据，
+// 并剥离 upstream_model_name / admin_info / audit_info（读取视图职责）。
+func redactLogOther(log *Log, keepAdmin bool) {
+	if log == nil {
+		return
+	}
+	// 日志主体脱敏：历史/上游错误文本可能携带凭据。
+	log.Content = common.RedactCredentials(log.Content)
+	// model_name 也可能携带上游自定义模型名中的凭据，API 视图不得原样返回。
+	log.ModelName = common.RedactCredentials(log.ModelName)
+	otherMap, _ := common.StrToMap(log.Other)
+	if otherMap != nil {
+		if !keepAdmin {
 			// Remove admin-only debug fields.
 			delete(otherMap, "admin_info")
 			// Remove operation-audit details (operator/route info), admin-only.
 			delete(otherMap, "audit_info")
-			// delete(otherMap, "reject_reason")
-			// delete(otherMap, "stream_status")
 		}
-		logs[i].Other = common.MapToJsonStr(otherMap)
+		// upstream_model_name may carry the upstream Endpoint ID (e.g. Ark
+		// "ep-xxxx"); it must never reach any log view through the API.
+		delete(otherMap, "upstream_model_name")
+		// Mask credential-like values (Endpoint IDs / API keys / bearer
+		// tokens) that may appear inside remaining fields, e.g. upstream
+		// error text in stream_status or param override audit values.
+		redactSensitiveMapValues(otherMap)
+		log.Other = common.MapToJsonStr(otherMap)
+	} else if log.Other != "" {
+		// 畸形历史日志：无法解析为 JSON 对象时，直接对原始文本兜底脱敏，
+		// 防止凭据通过非结构化的 other 内容泄露。
+		log.Other = common.RedactCredentials(log.Other)
 	}
-	assignDisplayLogIds(logs, startIdx)
+}
+
+// redactSensitiveMapValues recursively masks credential-like values (Ark
+// Endpoint IDs, API keys, bearer tokens) inside a log "other" map before it is
+// persisted or exposed through the API. Frontend-decoded opaque fields
+// (e.g. expr_b64) are decoded, redacted and re-encoded, so reversible
+// credentials cannot survive inside them; undecodable values fall back to
+// raw-text redaction so malformed payloads cannot smuggle plain credentials.
+func redactSensitiveMapValues(m map[string]interface{}) {
+	for k, v := range m {
+		if k == "expr_b64" {
+			// expr_b64 是可逆的 base64 文本，解码后可能内嵌凭据（如
+			// "Bearer sk-xxx" / "token:xxx"）。解码 → 脱敏 → 重编码，
+			// 保证解码展示的内容不再携带可逆凭据；无凭据时值保持不变。
+			// 非法（不可解码）值按原始文本兜底脱敏，杜绝畸形内容夹带明文凭据。
+			if s, ok := v.(string); ok && s != "" {
+				if decoded, err := base64.StdEncoding.DecodeString(s); err == nil {
+					m[k] = base64.StdEncoding.EncodeToString([]byte(common.RedactCredentials(string(decoded))))
+				} else if decoded, err := base64.RawStdEncoding.DecodeString(s); err == nil {
+					m[k] = base64.StdEncoding.EncodeToString([]byte(common.RedactCredentials(string(decoded))))
+				} else {
+					// 非法 base64：无法解码校验时按原始文本兜底脱敏，
+					// 防止畸形值中夹带明文凭据。
+					m[k] = common.RedactCredentials(s)
+				}
+			}
+			continue
+		}
+		switch val := v.(type) {
+		case string:
+			m[k] = common.RedactCredentials(val)
+		case []interface{}:
+			redactSensitiveSliceValues(val)
+		case map[string]interface{}:
+			redactSensitiveMapValues(val)
+		}
+	}
+}
+
+// redactSensitiveSliceValues recursively masks credential-like values inside a
+// JSON array of arbitrary nesting depth ([]interface{} / string /
+// map[string]interface{}), so credentials cannot bypass masking one level deep.
+func redactSensitiveSliceValues(s []interface{}) {
+	for i := range s {
+		switch item := s[i].(type) {
+		case string:
+			s[i] = common.RedactCredentials(item)
+		case []interface{}:
+			redactSensitiveSliceValues(item)
+		case map[string]interface{}:
+			redactSensitiveMapValues(item)
+		}
+	}
 }
 
 func GetLogByTokenId(tokenId int) (logs []*Log, err error) {
@@ -340,9 +448,11 @@ type RecordConsumeLogParams struct {
 	Other            map[string]interface{} `json:"other"`
 }
 
-func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams) {
+// RecordConsumeLog 记录一条消费日志，返回日志是否实际写入成功。
+// 异步任务提交时据此持久化 task.ConsumeLogRecorded，结算/退款只在消费日志确实存在时才写计费调整日志。
+func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams) bool {
 	if !common.LogConsumeEnabled {
-		return
+		return false
 	}
 	logger.LogInfo(c, fmt.Sprintf("record consume log: userId=%d, params=%s", userId, common.GetJsonString(params)))
 	username := c.GetString("username")
@@ -386,6 +496,7 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 	err := createLog(log)
 	if err != nil {
 		logger.LogError(c, "failed to record log: "+err.Error())
+		return false
 	}
 	if common.DataExportEnabled {
 		LogQuotaData(QuotaDataLogParams{
@@ -401,6 +512,7 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 			NodeName:  common.NodeName,
 		})
 	}
+	return true
 }
 
 type RecordTaskBillingLogParams struct {
@@ -417,9 +529,8 @@ type RecordTaskBillingLogParams struct {
 }
 
 func RecordTaskBillingLog(params RecordTaskBillingLogParams) {
-	if params.LogType == LogTypeConsume && !common.LogConsumeEnabled {
-		return
-	}
+	// 是否写入由调用方决定：异步任务按"提交时是否记录消费日志"（task.ConsumeLogRecorded），
+	// 保证消费与退款/补扣日志口径对称，避免统计随开关跳变或出现无配对的负趋势。
 	username, _ := GetUsernameById(params.UserId, false)
 	tokenName := ""
 	if params.TokenId > 0 {
@@ -446,21 +557,29 @@ func RecordTaskBillingLog(params RecordTaskBillingLogParams) {
 	if err != nil {
 		common.SysLog("failed to record task billing log: " + err.Error())
 	}
-	if params.LogType == LogTypeConsume && common.DataExportEnabled {
+	// 任务计费日志（差额补扣/差额退款/全额退款）作为"调整记录"写入看板数据：
+	// Count 固定为 0（请求已在提交时的消费日志中计数一次），Quota 带符号
+	// （消费为正、退款为负），使"净消费 = 消费 - 退款"在看板趋势上成立。
+	if common.DataExportEnabled && (params.LogType == LogTypeConsume || params.LogType == LogTypeRefund) {
 		nodeName := params.NodeName
 		if nodeName == "" {
 			nodeName = common.NodeName
 		}
+		logQuota := params.Quota
+		if params.LogType == LogTypeRefund {
+			logQuota = -params.Quota
+		}
 		LogQuotaData(QuotaDataLogParams{
-			UserID:    params.UserId,
-			Username:  username,
-			ModelName: params.ModelName,
-			Quota:     params.Quota,
-			CreatedAt: createdAt,
-			UseGroup:  params.Group,
-			TokenID:   params.TokenId,
-			ChannelID: params.ChannelId,
-			NodeName:  nodeName,
+			UserID:     params.UserId,
+			Username:   username,
+			ModelName:  params.ModelName,
+			Quota:      logQuota,
+			CreatedAt:  createdAt,
+			UseGroup:   params.Group,
+			TokenID:    params.TokenId,
+			ChannelID:  params.ChannelId,
+			NodeName:   nodeName,
+			Adjustment: true,
 		})
 	}
 }
@@ -556,6 +675,12 @@ func GetAllLogs(logType int, startTimestamp int64, endTimestamp int64, modelName
 		}
 	}
 
+	// 管理员视图同样剥离 upstream_model_name（方舟 Endpoint ID）并脱敏凭据，
+	// 保留 admin_info/audit_info 供管理员排查。
+	for i := range logs {
+		redactLogOther(logs[i], true)
+	}
+
 	return logs, total, err
 }
 
@@ -616,53 +741,72 @@ type Stat struct {
 }
 
 func SumUsedQuota(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, channel int, group string) (stat Stat, err error) {
-	tx := LOG_DB.Table("logs").Select("COALESCE(sum(quota), 0) quota")
-
-	// 为rpm和tpm创建单独的查询
+	// 净消费 = 消费日志额度合计 - 退款日志额度合计。
+	// 异步任务提交时预扣的额度记为消费日志，差额退款/全额退款记为退款日志，
+	// 因此只有两者相减才能反映真实消耗（如 Seedance 预扣 $1.5754、退款 $1.2563、净消费 $0.3191）。
+	consumeQuery := LOG_DB.Table("logs").Select("COALESCE(sum(quota), 0) quota")
+	refundQuery := LOG_DB.Table("logs").Select("COALESCE(sum(quota), 0) quota")
+	// 为rpm和tpm创建单独的查询（仅统计消费日志，退款不计为新请求）
 	rpmTpmQuery := LOG_DB.Table("logs").Select("count(*) rpm, COALESCE(sum(prompt_tokens), 0) + COALESCE(sum(completion_tokens), 0) tpm")
 
-	if tx, err = applyExplicitLogTextFilter(tx, "username", username); err != nil {
-		return stat, err
-	}
-	if rpmTpmQuery, err = applyExplicitLogTextFilter(rpmTpmQuery, "username", username); err != nil {
-		return stat, err
-	}
-	if tokenName != "" {
-		tx = tx.Where("token_name = ?", tokenName)
-		rpmTpmQuery = rpmTpmQuery.Where("token_name = ?", tokenName)
-	}
-	if startTimestamp != 0 {
-		tx = tx.Where("created_at >= ?", startTimestamp)
-	}
-	if endTimestamp != 0 {
-		tx = tx.Where("created_at <= ?", endTimestamp)
-	}
-	if tx, err = applyExplicitLogTextFilter(tx, "model_name", modelName); err != nil {
-		return stat, err
-	}
-	if rpmTpmQuery, err = applyExplicitLogTextFilter(rpmTpmQuery, "model_name", modelName); err != nil {
-		return stat, err
-	}
-	if channel != 0 {
-		tx = tx.Where("channel_id = ?", channel)
-		rpmTpmQuery = rpmTpmQuery.Where("channel_id = ?", channel)
-	}
-	if group != "" {
-		tx = tx.Where(logGroupCol+" = ?", group)
-		rpmTpmQuery = rpmTpmQuery.Where(logGroupCol+" = ?", group)
+	applyFilters := func(tx *gorm.DB) (*gorm.DB, error) {
+		if tx, err = applyExplicitLogTextFilter(tx, "username", username); err != nil {
+			return tx, err
+		}
+		if tokenName != "" {
+			tx = tx.Where("token_name = ?", tokenName)
+		}
+		if startTimestamp != 0 {
+			tx = tx.Where("created_at >= ?", startTimestamp)
+		}
+		if endTimestamp != 0 {
+			tx = tx.Where("created_at <= ?", endTimestamp)
+		}
+		if tx, err = applyExplicitLogTextFilter(tx, "model_name", modelName); err != nil {
+			return tx, err
+		}
+		if channel != 0 {
+			tx = tx.Where("channel_id = ?", channel)
+		}
+		if group != "" {
+			tx = tx.Where(logGroupCol+" = ?", group)
+		}
+		return tx, nil
 	}
 
-	tx = tx.Where("type = ?", LogTypeConsume)
+	if consumeQuery, err = applyFilters(consumeQuery); err != nil {
+		return stat, err
+	}
+	if refundQuery, err = applyFilters(refundQuery); err != nil {
+		return stat, err
+	}
+	if rpmTpmQuery, err = applyFilters(rpmTpmQuery); err != nil {
+		return stat, err
+	}
+
+	consumeQuery = consumeQuery.Where("type = ?", LogTypeConsume)
+	refundQuery = refundQuery.Where("type = ?", LogTypeRefund)
 	rpmTpmQuery = rpmTpmQuery.Where("type = ?", LogTypeConsume)
+
+	// 任务差额补扣/退款的计费调整日志（Other 含 pre_consumed_quota）不算一次新请求：
+	// 一次异步任务只由提交时的消费日志计数一次，RPM/TPM 仅统计真实请求。
+	rpmTpmQuery = rpmTpmQuery.Where("(other IS NULL OR other NOT LIKE '%\"pre_consumed_quota\"%')")
 
 	// 只统计最近60秒的rpm和tpm
 	rpmTpmQuery = rpmTpmQuery.Where("created_at >= ?", time.Now().Add(-60*time.Second).Unix())
 
 	// 执行查询
-	if err := tx.Scan(&stat).Error; err != nil {
+	var consumeQuota int
+	if err := consumeQuery.Scan(&consumeQuota).Error; err != nil {
 		common.SysError("failed to query log stat: " + err.Error())
 		return stat, errors.New("查询统计数据失败")
 	}
+	var refundQuota int
+	if err := refundQuery.Scan(&refundQuota).Error; err != nil {
+		common.SysError("failed to query log stat: " + err.Error())
+		return stat, errors.New("查询统计数据失败")
+	}
+	stat.Quota = consumeQuota - refundQuota
 	if err := rpmTpmQuery.Scan(&stat).Error; err != nil {
 		common.SysError("failed to query rpm/tpm stat: " + err.Error())
 		return stat, errors.New("查询统计数据失败")

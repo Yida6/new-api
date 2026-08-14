@@ -17,21 +17,25 @@ var LogWriterMu sync.RWMutex
 func SysLog(s string) {
 	t := time.Now()
 	LogWriterMu.RLock()
-	_, _ = fmt.Fprintf(gin.DefaultWriter, "[SYS] %v | %s \n", t.Format("2006/01/02 - 15:04:05"), s)
+	// 系统日志出口统一脱敏凭据类值（方舟 Endpoint ID / API Key / Bearer
+	// Token / 凭据键值对），防止上游响应体等日志内容落盘未脱敏凭据。
+	_, _ = fmt.Fprintf(gin.DefaultWriter, "[SYS] %v | %s \n", t.Format("2006/01/02 - 15:04:05"), RedactCredentials(s))
 	LogWriterMu.RUnlock()
 }
 
 func SysError(s string) {
 	t := time.Now()
 	LogWriterMu.RLock()
-	_, _ = fmt.Fprintf(gin.DefaultErrorWriter, "[SYS] %v | %s \n", t.Format("2006/01/02 - 15:04:05"), s)
+	_, _ = fmt.Fprintf(gin.DefaultErrorWriter, "[SYS] %v | %s \n", t.Format("2006/01/02 - 15:04:05"), RedactCredentials(s))
 	LogWriterMu.RUnlock()
 }
 
 func FatalLog(v ...any) {
 	t := time.Now()
 	LogWriterMu.RLock()
-	_, _ = fmt.Fprintf(gin.DefaultErrorWriter, "[FATAL] %v | %v \n", t.Format("2006/01/02 - 15:04:05"), v)
+	// 与 SysLog/SysError 一致：Fatal 出口同样脱敏凭据类值，
+	// 防止启动/致命错误文本（可能回显配置中的 Endpoint ID / API Key）落盘。
+	_, _ = fmt.Fprintf(gin.DefaultErrorWriter, "[FATAL] %v | %s \n", t.Format("2006/01/02 - 15:04:05"), RedactCredentials(fmt.Sprintf("%v", v)))
 	LogWriterMu.RUnlock()
 	os.Exit(1)
 }
