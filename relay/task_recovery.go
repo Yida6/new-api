@@ -1,8 +1,11 @@
 package relay
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -93,11 +96,44 @@ func PersistOutcomeUnknown(c *gin.Context, info *relaycommon.RelayInfo, fingerpr
 }
 
 // classifyErrorKind 把错误归类为简短的非敏感标识（不包含任何错误原文）。
+//
+// 识别顺序（优先标准错误机制，文本兜底只作最后手段）：
+//  1. errors.Is(err, context.DeadlineExceeded) —— 超时哨兵错误；
+//  2. errors.As 到 net.Error 且 Timeout() 为 true —— http.Client 的
+//     Client.Timeout 会包成 *url.Error（其 Timeout() 透传底层超时）；
+//  3. 遍历完整单链 errors.Unwrap 收集链上全部错误文本后做关键词匹配。
+//     不能只检查顶层 err.Error()：doRequest 经 ErrOptionWithHideErrMsg
+//     （relaykit/types）把对外文案替换为通用文本，原始错误在 Unwrap 链中。
+//
+// 只读错误链做分类，绝不把错误原文写入恢复记录或客户端响应。
 func classifyErrorKind(err error) string {
 	if err == nil {
 		return "unknown"
 	}
-	lower := strings.ToLower(err.Error())
+
+	// 1) 标准错误机制：上下文超时哨兵
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "timeout"
+	}
+
+	// 2) net.Error 且 Timeout() 为 true（含 *url.Error 透传的客户端超时）
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return "timeout"
+	}
+
+	// 3) 遍历完整单链收集全部错误文本（覆盖隐藏文案包装的底层原因）
+	var text strings.Builder
+	for e := err; e != nil; {
+		text.WriteString(e.Error())
+		text.WriteByte(' ')
+		u := errors.Unwrap(e)
+		if u == nil {
+			break
+		}
+		e = u
+	}
+	lower := strings.ToLower(text.String())
 	switch {
 	case strings.Contains(lower, "timeout"), strings.Contains(lower, "deadline exceeded"),
 		strings.Contains(lower, "client.timeout"):
