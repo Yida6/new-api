@@ -91,7 +91,7 @@ export function Hero(props: HeroProps) {
       />
 
       <div className='mx-auto grid max-w-6xl grid-cols-1 items-center gap-12 lg:grid-cols-12 lg:gap-10'>
-        {/* Left Column: value proposition, actions, and domestic model coverage */}
+        {/* Left Column: value proposition, actions, and model coverage */}
         <div className='flex flex-col items-start text-left lg:col-span-6'>
           {/* Top Pill Badge */}
           <div
@@ -102,7 +102,7 @@ export function Hero(props: HeroProps) {
               <span className='absolute inline-flex h-full w-full animate-ping rounded-full bg-blue-400 opacity-75' />
               <span className='relative inline-flex size-1.5 rounded-full bg-blue-500 dark:bg-blue-400' />
             </span>
-            <span>{t('API infrastructure for domestic AI models')}</span>
+            <span>{t('API infrastructure for mainstream AI models')}</span>
           </div>
 
           <h1
@@ -112,7 +112,7 @@ export function Hero(props: HeroProps) {
             {t('One API for')}
             <br />
             <span className='bg-gradient-to-r from-blue-400 via-violet-400 to-purple-500 bg-clip-text text-transparent'>
-              {t('Leading Domestic AI Models')}
+              {t('Mainstream AI Models')}
             </span>
           </h1>
           <p
@@ -120,7 +120,7 @@ export function Hero(props: HeroProps) {
             style={{ animationDelay: '120ms' }}
           >
             {t(
-              'Connect DeepSeek, Doubao, Qwen, GLM and other domestic models through one standard API, with routing, billing and observability managed in one place.'
+              'Connect mainstream AI models through one standard API, with routing, billing and observability managed in one place.'
             )}
           </p>
 
@@ -160,14 +160,14 @@ export function Hero(props: HeroProps) {
             )}
           </div>
 
-          {/* Domestic model coverage */}
+          {/* Model coverage */}
           <div
             className='landing-animate-fade-up mt-10 w-full max-w-xl opacity-0'
             style={{ animationDelay: '240ms' }}
           >
             <div className='mb-3 flex items-center justify-between gap-4'>
               <span className='text-muted-foreground/50 text-[10px] font-bold tracking-[0.15em] uppercase'>
-                {t('Domestic models supported')}
+                {t('Mainstream models supported')}
               </span>
               <span className='text-muted-foreground/50 text-[10px]'>
                 {t('More models available in the console')}

@@ -29,7 +29,7 @@ export function HowItWorks() {
       num: '1',
       title: t('Configure'),
       desc: t(
-        'Add domestic model channels, then set priorities, weights and access groups'
+        'Add model channels, then set priorities, weights and access groups'
       ),
       icon: <Settings className='size-6' strokeWidth={1.5} />,
     },

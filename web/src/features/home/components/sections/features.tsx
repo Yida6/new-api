@@ -39,11 +39,11 @@ export function Features(_props: FeaturesProps) {
 
   const features = [
     {
-      id: 'domestic-models',
+      id: 'mainstream-models',
       num: '01',
-      title: t('Domestic models, one API'),
+      title: t('Mainstream models, one API'),
       desc: t(
-        'Use one request format to access leading domestic text, reasoning, image and video models'
+        'Use one request format to access mainstream text, reasoning, image and video models'
       ),
       span: 'md:col-span-2',
       icon: <Waypoints className='size-4 text-blue-400' />,
@@ -187,7 +187,7 @@ export function Features(_props: FeaturesProps) {
             {t('Core Features')}
           </p>
           <h2 className='text-2xl leading-tight font-bold tracking-tight md:text-3xl'>
-            {t('Built for domestic model access,')}
+            {t('Built for mainstream model access,')}
             <br />
             {t('ready for production operations')}
           </h2>

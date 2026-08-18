@@ -21,8 +21,8 @@ import { describe, test } from 'node:test'
 
 import { API_DEMOS } from '../hero-terminal-demo'
 
-describe('home page domestic model demos', () => {
-  test('shows only the selected domestic model providers', () => {
+describe('home page mainstream model demos', () => {
+  test('shows the selected mainstream model providers', () => {
     assert.deepEqual(
       API_DEMOS.map((demo) => demo.label),
       ['DeepSeek', '豆包', '通义千问', '智谱 GLM']
@@ -36,9 +36,10 @@ describe('home page domestic model demos', () => {
     )
   })
 
-  test('does not include foreign model providers in the demo content', () => {
-    const content = JSON.stringify(API_DEMOS)
-
-    assert.doesNotMatch(content, /OpenAI|Claude|Gemini|Llama/i)
+  test('uses a stable identifier for every provider demo', () => {
+    assert.equal(
+      new Set(API_DEMOS.map((demo) => demo.id)).size,
+      API_DEMOS.length
+    )
   })
 })
