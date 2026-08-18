@@ -43,7 +43,7 @@ body{margin:0;font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI","Pin
 .site-header-inner{width:min(1380px,100%);height:100%;margin:0 auto;padding:0 28px;display:flex;align-items:center;justify-content:space-between}
 .brand{display:inline-flex;align-items:center;gap:11px;color:var(--text);font-size:16px;font-weight:700;letter-spacing:.01em}
 .brand:hover{text-decoration:none}
-.brand-mark{display:inline-grid;place-items:center;width:36px;height:36px;border-radius:10px;color:#fff;font-size:12px;font-weight:800;letter-spacing:.06em;background:linear-gradient(135deg,#2563eb,#4f46e5);box-shadow:0 7px 18px rgba(37,99,235,.22)}
+.brand-mark{display:block;width:36px;height:36px}
 .header-tag{padding:5px 10px;border:1px solid var(--line);border-radius:999px;color:var(--muted);background:#fff;font-size:12px;font-weight:600}
 .docs-layout{width:min(1380px,100%);margin:0 auto;padding:34px 28px 96px;display:grid;grid-template-columns:240px minmax(0,900px);gap:44px;justify-content:center;align-items:start}
 .container{min-width:0}
@@ -115,12 +115,13 @@ html = f"""<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>JadeRoute 用户指南</title>
+<link rel="icon" type="image/svg+xml" href="/brand/jaderoute-mark.svg">
 <style>{CSS}</style>
 </head>
 <body>
 <header class="site-header">
 <div class="site-header-inner">
-<a class="brand" href="/docs/" aria-label="JadeRoute 用户指南首页"><span class="brand-mark">JR</span><span>JadeRoute 用户指南</span></a>
+<a class="brand" href="/docs/" aria-label="JadeRoute 用户指南首页"><img class="brand-mark" src="/brand/jaderoute-mark.svg" alt=""><span>JadeRoute 用户指南</span></a>
 <span class="header-tag">开发者文档</span>
 </div>
 </header>
