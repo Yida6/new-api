@@ -49,7 +49,8 @@ async function fetchLogs<T>(
     ...params,
   })
   const path = buildApiPath(endpoint, isAdmin)
-  const res = await api.get(`${path}?${queryParams}`)
+  const listPath = isAdmin ? `${path}/` : path
+  const res = await api.get(`${listPath}?${queryParams}`)
   return res.data
 }
 
