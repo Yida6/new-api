@@ -114,13 +114,13 @@ html = f"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>API 用户指南</title>
+<title>JadeRoute 用户指南</title>
 <style>{CSS}</style>
 </head>
 <body>
 <header class="site-header">
 <div class="site-header-inner">
-<a class="brand" href="/docs/" aria-label="API 用户指南首页"><span class="brand-mark">API</span><span>用户指南</span></a>
+<a class="brand" href="/docs/" aria-label="JadeRoute 用户指南首页"><span class="brand-mark">JR</span><span>JadeRoute 用户指南</span></a>
 <span class="header-tag">开发者文档</span>
 </div>
 </header>
