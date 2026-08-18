@@ -70,7 +70,8 @@ const ACCENT_CLASSES: Record<
   },
 }
 
-const API_DEMOS: ApiDemoConfig[] = [
+// oxlint-disable-next-line react/only-export-components -- exported for content regression tests
+export const API_DEMOS: ApiDemoConfig[] = [
   {
     id: 'deepseek',
     label: 'DeepSeek',
