@@ -57,12 +57,12 @@ export function CTA(props: CTAProps) {
           {t('Ready to simplify')}
           <br />
           <span className='bg-gradient-to-r from-blue-400 via-violet-400 to-purple-500 bg-clip-text text-transparent'>
-            {t('your AI integration?')}
+            {t('your domestic model integration?')}
           </span>
         </h2>
         <p className='text-muted-foreground/80 mx-auto mt-5 max-w-md text-sm leading-relaxed md:text-base'>
           {t(
-            'Deploy your own gateway and start routing requests through your configured upstream services.'
+            'Connect domestic models through one gateway and keep routing, billing and operations under control.'
           )}
         </p>
         <div className='mt-8 flex items-center justify-center gap-3'>

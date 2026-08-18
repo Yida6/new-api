@@ -29,7 +29,7 @@ export function HowItWorks() {
       num: '1',
       title: t('Configure'),
       desc: t(
-        'Add your API keys, set up channels and configure access permissions'
+        'Add domestic model channels, then set priorities, weights and access groups'
       ),
       icon: <Settings className='size-6' strokeWidth={1.5} />,
     },
@@ -37,14 +37,16 @@ export function HowItWorks() {
       num: '2',
       title: t('Connect'),
       desc: t(
-        'Connect through OpenAI, Claude, Gemini, and other compatible API routes'
+        'Point your application to one base URL and select the model you need'
       ),
       icon: <Zap className='size-6' strokeWidth={1.5} />,
     },
     {
       num: '3',
       title: t('Monitor'),
-      desc: t('Track usage, costs and performance with real-time analytics'),
+      desc: t(
+        'Track usage, costs, latency and channel health with real-time analytics'
+      ),
       icon: <BarChart3 className='size-6' strokeWidth={1.5} />,
     },
   ]

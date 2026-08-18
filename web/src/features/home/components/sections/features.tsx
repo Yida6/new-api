@@ -17,12 +17,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import {
-  Zap,
-  Shield,
-  Globe,
+  Activity,
+  BadgeDollarSign,
+  GitBranch,
+  Waypoints,
   Code,
   Gauge,
-  DollarSign,
   Users,
   HeartHandshake,
 } from 'lucide-react'
@@ -39,17 +39,17 @@ export function Features(_props: FeaturesProps) {
 
   const features = [
     {
-      id: 'fast',
+      id: 'domestic-models',
       num: '01',
-      title: t('Lightning Fast'),
+      title: t('Domestic models, one API'),
       desc: t(
-        'Optimized network architecture ensures millisecond response times'
+        'Use one request format to access leading domestic text, reasoning, image and video models'
       ),
       span: 'md:col-span-2',
-      icon: <Zap className='size-4 text-blue-400' />,
+      icon: <Waypoints className='size-4 text-blue-400' />,
       visual: (
         <div className='mt-4 grid grid-cols-3 gap-2'>
-          {['OpenAI', 'Claude', 'Gemini', 'DeepSeek', 'Qwen', 'Llama'].map(
+          {['DeepSeek', '豆包', '通义千问', '智谱 GLM', 'Kimi', 'MiniMax'].map(
             (name) => (
               <div
                 key={name}
@@ -63,19 +63,19 @@ export function Features(_props: FeaturesProps) {
       ),
     },
     {
-      id: 'secure',
+      id: 'routing',
       num: '02',
-      title: t('Secure & Reliable'),
+      title: t('Smart channel routing'),
       desc: t(
-        'Enterprise-grade security with comprehensive permission management'
+        'Combine priorities, weights and automatic failover for reliable traffic'
       ),
       span: 'md:col-span-1',
-      icon: <Shield className='size-4 text-emerald-400' />,
+      icon: <GitBranch className='size-4 text-emerald-400' />,
       visual: (
         <div className='mt-4 flex items-center justify-center'>
           <div className='relative'>
             <div className='flex size-16 items-center justify-center rounded-2xl border border-emerald-500/20 bg-emerald-500/5'>
-              <Shield
+              <GitBranch
                 className='size-7 text-emerald-500/70'
                 strokeWidth={1.5}
               />
@@ -100,15 +100,15 @@ export function Features(_props: FeaturesProps) {
       ),
     },
     {
-      id: 'global',
+      id: 'billing',
       num: '03',
-      title: t('Global Coverage'),
-      desc: t('Multi-region deployment for stable global access'),
+      title: t('Fine-grained billing'),
+      desc: t('Keep model pricing, groups and usage settlement under control'),
       span: 'md:col-span-1',
-      icon: <Globe className='size-4 text-violet-400' />,
+      icon: <BadgeDollarSign className='size-4 text-violet-400' />,
       visual: (
         <div className='mt-4 space-y-2'>
-          {[t('Load Balancing'), t('Rate Limiting'), t('Cost Tracking')].map(
+          {[t('Model pricing'), t('Group ratios'), t('Usage settlement')].map(
             (step, i) => (
               <div key={step} className='flex items-center gap-2'>
                 <div
@@ -129,16 +129,16 @@ export function Features(_props: FeaturesProps) {
       ),
     },
     {
-      id: 'developer',
+      id: 'observability',
       num: '04',
-      title: t('Developer Friendly'),
-      desc: t('Compatible API routes for common AI application workflows'),
+      title: t('Observable by default'),
+      desc: t('See every request, token, cost, latency and upstream error'),
       span: 'md:col-span-2',
-      icon: <Code className='size-4 text-amber-400' />,
+      icon: <Activity className='size-4 text-amber-400' />,
       visual: (
         <div className='mt-4 flex items-center gap-3'>
           <div className='flex -space-x-2'>
-            {['API', 'SDK', 'CLI', 'Docs'].map((n) => (
+            {[t('Requests'), t('Tokens'), t('Cost'), t('Latency')].map((n) => (
               <div
                 key={n}
                 className='border-background from-muted to-muted/60 text-muted-foreground flex size-8 items-center justify-center rounded-full border-2 bg-gradient-to-br text-[9px] font-bold'
@@ -149,7 +149,7 @@ export function Features(_props: FeaturesProps) {
           </div>
           <div className='text-muted-foreground flex items-center gap-1.5 text-xs'>
             <Code className='size-3.5 text-blue-500' />
-            {t('Multi-protocol Compatible')}
+            {t('Traceable from request to channel')}
           </div>
         </div>
       ),
@@ -160,12 +160,12 @@ export function Features(_props: FeaturesProps) {
     {
       icon: <Gauge className='size-5' strokeWidth={1.5} />,
       title: t('High Performance'),
-      desc: t('Support for high concurrency with automatic load balancing'),
+      desc: t('High concurrency with load balancing and rate limiting'),
     },
     {
-      icon: <DollarSign className='size-5' strokeWidth={1.5} />,
-      title: t('Transparent Billing'),
-      desc: t('Pay-as-you-go with real-time usage monitoring'),
+      icon: <Code className='size-5' strokeWidth={1.5} />,
+      title: t('Easy migration'),
+      desc: t('Keep familiar SDKs and change only the base URL'),
     },
     {
       icon: <Users className='size-5' strokeWidth={1.5} />,
@@ -187,9 +187,9 @@ export function Features(_props: FeaturesProps) {
             {t('Core Features')}
           </p>
           <h2 className='text-2xl leading-tight font-bold tracking-tight md:text-3xl'>
-            {t('Built for developers,')}
+            {t('Built for domestic model access,')}
             <br />
-            {t('designed for scale')}
+            {t('ready for production operations')}
           </h2>
         </AnimateInView>
 

@@ -72,15 +72,15 @@ const ACCENT_CLASSES: Record<
 
 const API_DEMOS: ApiDemoConfig[] = [
   {
-    id: 'gpt-chat',
-    label: 'Chat',
+    id: 'deepseek',
+    label: 'DeepSeek',
     method: 'POST',
     endpoint: '/v1/chat/completions',
     headers: ['"Authorization: Bearer sk-••••"'],
     request: [
-      '"model": "your-model",',
+      '"model": "deepseek-chat",',
       '"messages": [',
-      '  { "role": "user", "content": "..." }',
+      '  { "role": "user", "content": "你好" }',
       ']',
     ],
     response: [
@@ -95,15 +95,20 @@ const API_DEMOS: ApiDemoConfig[] = [
     accent: 'emerald',
   },
   {
-    id: 'responses',
-    label: 'Responses',
+    id: 'doubao',
+    label: '豆包',
     method: 'POST',
-    endpoint: '/v1/responses',
+    endpoint: '/v1/chat/completions',
     headers: ['"Authorization: Bearer sk-••••"'],
-    request: ['"model": "your-model",', '"input": "..."'],
+    request: [
+      '"model": "doubao-seed-1-6",',
+      '"messages": [',
+      '  { "role": "user", "content": "你好" }',
+      ']',
+    ],
     response: [
       '{',
-      '  "output": [{ "type": "output_text", "text": <text> }],',
+      '  "choices": [{ "message": { "content": <text> } }],',
       '  "usage": { "total_tokens": <tokens> }',
       '}',
     ],
@@ -113,45 +118,44 @@ const API_DEMOS: ApiDemoConfig[] = [
     accent: 'amber',
   },
   {
-    id: 'claude',
-    label: 'Claude',
+    id: 'qwen',
+    label: '通义千问',
     method: 'POST',
-    endpoint: '/v1/messages',
-    headers: ['"x-api-key: sk-••••"', '"anthropic-version: 2023-06-01"'],
+    endpoint: '/v1/chat/completions',
+    headers: ['"Authorization: Bearer sk-••••"'],
     request: [
-      '"model": "your-model",',
-      '"max_tokens": 1024,',
+      '"model": "qwen-plus",',
       '"messages": [',
-      '  { "role": "user", "content": "..." }',
+      '  { "role": "user", "content": "你好" }',
       ']',
     ],
     response: [
       '{',
-      '  "content": [{ "type": "text", "text": <text> }],',
-      '  "usage": { "input_tokens": <in>, "output_tokens": <out> }',
+      '  "choices": [{ "message": { "content": <text> } }],',
+      '  "usage": { "total_tokens": <tokens> }',
       '}',
     ],
-    responseHighlights: ['<text>', '<in>', '<out>'],
+    responseHighlights: ['<text>', '<tokens>'],
     tokens: 29,
     latency: 156,
     accent: 'blue',
   },
   {
-    id: 'gemini',
-    label: 'Gemini',
+    id: 'glm',
+    label: '智谱 GLM',
     method: 'POST',
-    endpoint: '/v1beta/models/{model}:generateContent',
-    headers: ['"x-goog-api-key: sk-••••"'],
+    endpoint: '/v1/chat/completions',
+    headers: ['"Authorization: Bearer sk-••••"'],
     request: [
-      '"contents": [',
-      '  { "role": "user",',
-      '    "parts": [{ "text": "..." }] }',
+      '"model": "glm-4.7",',
+      '"messages": [',
+      '  { "role": "user", "content": "你好" }',
       ']',
     ],
     response: [
       '{',
-      '  "candidates": [{ "content": { "parts": [{ "text": <text> }] } }],',
-      '  "usageMetadata": { "totalTokenCount": <tokens> }',
+      '  "choices": [{ "message": { "content": <text> } }],',
+      '  "usage": { "total_tokens": <tokens> }',
       '}',
     ],
     responseHighlights: ['<text>', '<tokens>'],
@@ -301,10 +305,8 @@ export function HeroTerminalDemo(props: HeroTerminalDemoProps) {
             </span>
             <span className='bg-foreground/15 size-1 rounded-full' />
             <span className='flex items-center gap-1'>
-              <span className='tracking-wider uppercase'>cost</span>
-              <span className='font-mono'>
-                ${(demo.tokens * 0.00003).toFixed(5)}
-              </span>
+              <span className='tracking-wider uppercase'>route</span>
+              <span className='font-mono'>auto</span>
             </span>
           </div>
           <span className='text-foreground/30 font-mono text-[10px] tracking-wider uppercase'>
@@ -448,10 +450,10 @@ function renderResponseLine(line: string, demo: ApiDemoConfig): ReactNode {
 
 function truncateResponse(demo: ApiDemoConfig): string {
   const map: Record<string, string> = {
-    'gpt-chat': 'Chat request routed.',
-    responses: 'Response workflow ready.',
-    claude: 'Claude message routed.',
-    gemini: 'Gemini request served.',
+    deepseek: 'DeepSeek request routed.',
+    doubao: 'Doubao request routed.',
+    qwen: 'Qwen request routed.',
+    glm: 'GLM request routed.',
   }
   return map[demo.id] ?? '...'
 }
