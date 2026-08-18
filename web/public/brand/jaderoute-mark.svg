@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <title>JadeRoute</title>
+  <path
+    fill="#087F5B"
+    d="M11 55V27C11 13.745 21.745 3 35 3s24 10.745 24 24v28H47V27c0-6.627-5.373-12-12-12s-12 5.373-12 12v28H11Z"
+  />
+  <path
+    stroke="#19D3AE"
+    stroke-linecap="round"
+    stroke-width="8"
+    d="M17 51c7-7 27-4 27-16 0-8-14-5-14-13"
+  />
+  <circle cx="30" cy="20" r="4" fill="#6D4AFF" />
+</svg>
