@@ -209,12 +209,15 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	}
 
 	// 6. 将 OtherRatios（定价倍率）应用到基础额度，再叠加仅预扣缓冲
-	//    （PreConsumeMultiplier：时长/无表模型保守系数，只用于预留、绝不进入
-	//    真实结算），饱和转换防止溢出成负数。
+	//    （PreConsumeMultiplier：按火山官方 token 公式的精确预扣系数，只用于
+	//    预留、绝不进入真实结算），饱和转换防止溢出成负数。
+	//    注意：系数可 < 1（短时长/低分辨率按官方 token 精确预扣时低于"隐含
+	//    25 万 token"基础），因此条件为 m>0 且 !=1.0（1.0 无需覆盖），而不是
+	//    旧逻辑的 m>1.0。
 	if !common.StringsContains(constant.TaskPricePatches, modelName) {
 		quotaWithRatios := info.PriceData.ApplyOtherRatiosToFloat(float64(info.PriceData.Quota))
 		if provider, ok := adaptor.(PreConsumeMultiplierProvider); ok {
-			if m := provider.PreConsumeMultiplier(c, info); m > 1.0 {
+			if m := provider.PreConsumeMultiplier(c, info); m > 0 && m != 1.0 {
 				quotaWithRatios *= m
 				info.PriceData.PreConsumeMultiplier = m
 			}
