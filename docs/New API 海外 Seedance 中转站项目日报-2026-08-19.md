@@ -12,8 +12,8 @@
 - 完成修复代码的 Git 提交与推送，Commit 为 `0464f3f4`；构建并发布生产镜像 `new-api-central-asia:0464f3f4`，应用容器健康检查通过。
 - 完成发布前 PostgreSQL 备份，备份文件为 `/opt/new-api/backups/newapi-20260818T060434Z.sql.gz`；保留上一版镜像和 Compose 备份供回滚使用。
 - 完成公网基础验收，首页、渠道页入口和 `/api/status` 均返回 HTTP 200，修复后的三类集合接口已进入正常鉴权流程，不再返回 404。
-- **线上视频生成全链路实测（✅ 通过，当日午后补充）**：使用线上 key 对 `doubao-seedance-2.0-mini` 5s 文生视频跑通完整四段链路——提交（`POST /v1/video/generations`，返回 task_id）→ 轮询（`GET /v1/video/generations/:task_id`，queued → IN_PROGRESS → SUCCESS）→ 计费 → 鉴权取流（`GET /v1/videos/:task_id/content`，HTTP 200）；上游任务实际执行成功（模型映射 `doubao-seedance-2-0-mini-260615`，720p / 5s / 24fps / 带音频，usage 108,900 tokens），产物 MP4 3,691,400 字节、文件头校验有效（`ftyp isom/avc1/mp41`），已保存至本地 `generated-videos/seedance_test_20260819.mp4`。响应中上游直链（preview_url 等）按 MaskSensitiveInfo 脱敏为 `https://***.com/***`，取流仅走本服务鉴权代理，符合安全设计。
-- **Seedance 计费链路生产验证（✅，当日午后补充）**：同笔任务预扣 162,675 quota（÷50 万 ≈ **$0.3254**）→ 最终结算 70,861 quota（≈ **$0.1417** ≈ **¥1.03**，与上游 xinghezhiyun.com 成本按隐含汇率 7.27 基本平价）。确认「保守预扣缓冲（时长/5 × 保守单价系数，仅预扣、不进结算）＋ 真实倍率结算（实际 tokens × 组合单价倍率）」在生产生效，任务完成后预扣差额 91,814 quota（≈$0.18）自动退回，无负余额风险、无重复扣费。
+- **线上视频生成全链路实测：使用线上 key 对 `doubao-seedance-2.0-mini` 5s 文生视频跑通完整四段链路——提交（`POST /v1/video/generations`，返回 task_id）→ 轮询（`GET /v1/video/generations/:task_id`，queued → IN_PROGRESS → SUCCESS）→ 计费 → 鉴权取流（`GET /v1/videos/:task_id/content`，HTTP 200）；上游任务实际执行成功（模型映射 `doubao-seedance-2-0-mini-260615`，720p / 5s / 24fps / 带音频，usage 108,900 tokens），产物 MP4 3,691,400 字节、文件头校验有效（`ftyp isom/avc1/mp41`），已保存至本地 `generated-videos/seedance_test_20260819.mp4`。响应中上游直链（preview_url 等）按 MaskSensitiveInfo 脱敏为 `https://***.com/***`，取流仅走本服务鉴权代理，符合安全设计。
+- **Seedance 计费链路生产验证：同笔任务预扣 162,675 quota（÷50 万 ≈ **$0.3254**）→ 最终结算 70,861 quota（≈ **$0.1417** ≈ **¥1.03**，与上游 xinghezhiyun.com 成本按隐含汇率 7.27 基本平价）。确认「保守预扣缓冲（时长/5 × 保守单价系数，仅预扣、不进结算）＋ 真实倍率结算（实际 tokens × 组合单价倍率）」在生产生效，任务完成后预扣差额 91,814 quota（≈$0.18）自动退回，无负余额风险、无重复扣费。
 
 ## 二、明日计划
 
