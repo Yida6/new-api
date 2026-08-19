@@ -198,8 +198,8 @@ func initConstantEnv() {
 	constant.TaskQueryLimit = GetEnvOrDefault("TASK_QUERY_LIMIT", 1000)
 	// 异步任务超时时间（分钟），超过此时间未完成的任务将被标记为失败并退款。0 表示禁用。
 	constant.TaskTimeoutMinutes = GetEnvOrDefault("TASK_TIMEOUT_MINUTES", 1440)
-	// 单个用户同时运行 Seedance 任务的上限（默认 3，0 或负数 = 不限制）。
-	constant.SeedanceMaxConcurrentTasks = GetEnvOrDefault("SEEDANCE_MAX_CONCURRENT_TASKS", 3)
+	// 单个用户同时运行 Seedance 任务的上限（默认不限制；设置正数可重新启用限制）。
+	constant.SeedanceMaxConcurrentTasks = GetEnvOrDefault("SEEDANCE_MAX_CONCURRENT_TASKS", 0)
 	// 并发名额对账的过期阈值（分钟，默认 30）。
 	constant.SeedanceConcurrencyReconcileTTLMinutes = GetEnvOrDefault("SEEDANCE_CONCURRENCY_RECONCILE_TTL_MINUTES", 30)
 	constant.SeedanceDailyCostAlertUSD = getEnvOrDefaultNonNegativeFloat("SEEDANCE_DAILY_COST_ALERT_USD", 0)

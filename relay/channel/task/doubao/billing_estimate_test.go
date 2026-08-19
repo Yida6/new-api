@@ -88,12 +88,12 @@ func TestEstimateSeedancePricing_Standard2Combos(t *testing.T) {
 	}
 }
 
-// fast 的全部支持组合（基准档 37/22）：
+// fast 的全部支持组合（基准档 28/16.6）：
 //   - (480p, t2v)：真实倍率 1.0，预扣缓冲 1.0；
-//   - (480p, i2v)：真实倍率 22/37（<1），预扣缓冲 = maxRatio(1.0) / (22/37)。
+//   - (480p, i2v)：真实倍率 16.6/28（<1），预扣缓冲 = maxRatio(1.0) / (16.6/28)。
 func TestEstimateSeedancePricing_FastCombos(t *testing.T) {
 	const model = "doubao-seedance-2-0-fast-260128"
-	const base = 37.0
+	const base = 28.0
 
 	est := EstimateSeedancePricing(SeedanceBillingParams{Model: model, Resolution: "480p", Duration: 5, HasVideo: false})
 	require.True(t, est.PricedModel)
@@ -103,11 +103,44 @@ func TestEstimateSeedancePricing_FastCombos(t *testing.T) {
 
 	estI2V := EstimateSeedancePricing(SeedanceBillingParams{Model: model, Resolution: "480p", Duration: 5, HasVideo: true})
 	require.True(t, estI2V.PricedModel)
-	assert.InDelta(t, 22.0/base, estI2V.PricingMultiplier, 1e-9, "fast 视频输入真实倍率 = 22/37（允许 <1）")
+	assert.InDelta(t, 16.6/base, estI2V.PricingMultiplier, 1e-9, "fast 视频输入真实倍率 = 16.6/28（允许 <1）")
 	assert.Contains(t, estI2V.PricingRatios, "size")
-	assert.InDelta(t, 22.0/base, estI2V.PricingRatios["size"], 1e-9)
-	assert.InDelta(t, 1.0/(22.0/base), estI2V.PreConsumeMultiplier, 1e-9,
+	assert.InDelta(t, 16.6/base, estI2V.PricingRatios["size"], 1e-9)
+	assert.InDelta(t, 1.0/(16.6/base), estI2V.PreConsumeMultiplier, 1e-9,
 		"预扣缓冲 = maxRatio(1.0) / actual（预扣 = base × 1.0，永不低估）")
+}
+
+func TestEstimateSeedancePricing_NewModelCombos(t *testing.T) {
+	cases := []struct {
+		name       string
+		model      string
+		resolution string
+		hasVideo   bool
+		base       float64
+		price      float64
+	}{
+		{"mini-480p-t2v", "doubao-seedance-2-0-mini-260615", "480p", false, 9.5, 9.5},
+		{"mini-480p-i2v", "doubao-seedance-2-0-mini-260615", "480p", true, 9.5, 5.8},
+		{"mini-720p-t2v", "doubao-seedance-2-0-mini-260615", "720p", false, 9.5, 9.5},
+		{"mini-720p-i2v", "doubao-seedance-2-0-mini-260615", "720p", true, 9.5, 5.8},
+		{"2.5-480p-t2v", "doubao-seedance-2-5-260628", "480p", false, 70.7, 70.7},
+		{"2.5-480p-i2v", "doubao-seedance-2-5-260628", "480p", true, 70.7, 42.4},
+		{"2.5-720p-t2v", "doubao-seedance-2-5-260628", "720p", false, 70.7, 70.7},
+		{"2.5-720p-i2v", "doubao-seedance-2-5-260628", "720p", true, 70.7, 42.4},
+		{"2.5-1080p-t2v", "doubao-seedance-2-5-260628", "1080p", false, 70.7, 77.8},
+		{"2.5-1080p-i2v", "doubao-seedance-2-5-260628", "1080p", true, 70.7, 46.5},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			est := EstimateSeedancePricing(SeedanceBillingParams{
+				Model: tc.model, Resolution: tc.resolution, Duration: 5, HasVideo: tc.hasVideo,
+			})
+			require.True(t, est.PricedModel)
+			assert.InDelta(t, tc.price/tc.base, est.PricingMultiplier, 1e-9)
+			assert.False(t, est.ResolutionFellBack)
+		})
+	}
 }
 
 // 空分辨率（未指定 = 上游默认，合法）：按基准档结算，预扣 = base × dur × maxRatio。
@@ -194,6 +227,11 @@ func TestResolveSeedancePriceModel_AliasHitsPriceTable(t *testing.T) {
 	// fast 别名
 	got = ResolveSeedancePriceModel("doubao-seedance-2-0-fast", "ep-20260812yyyy")
 	assert.Equal(t, "doubao-seedance-2-0-fast-260128", got)
+
+	got = ResolveSeedancePriceModel("doubao-seedance-2.0-mini", "ep-20260812mini")
+	assert.Equal(t, "doubao-seedance-2-0-mini-260615", got)
+	got = ResolveSeedancePriceModel("doubao-seedance-2.5", "ep-20260812v25")
+	assert.Equal(t, "doubao-seedance-2-5-260628", got)
 }
 
 func TestResolveSeedancePriceModel_UpstreamVersionHitsPriceTable(t *testing.T) {
@@ -360,10 +398,28 @@ func TestValidateSeedanceResolutionForModel_FullCombinationCheck(t *testing.T) {
 	// fast 基准档两个组合都放行
 	assert.Empty(t, ValidateSeedanceResolutionForModel("doubao-seedance-2-0-fast-260128", "480p", false))
 	assert.Empty(t, ValidateSeedanceResolutionForModel("doubao-seedance-2-0-fast-260128", "480p", true))
+	assert.Empty(t, ValidateSeedanceResolutionForModel("doubao-seedance-2-0-fast-260128", "720p", false))
+	assert.Empty(t, ValidateSeedanceResolutionForModel("doubao-seedance-2-0-fast-260128", "720p", true))
 
-	// 2-0 含全部 6 个组合：全部放行
+	// mini 仅支持 480p/720p，且两档都支持视频输入。
 	for _, hasVideo := range []bool{false, true} {
-		for _, res := range []string{"480p", "1080p", "4k"} {
+		for _, res := range []string{"480p", "720p"} {
+			assert.Empty(t, ValidateSeedanceResolutionForModel("doubao-seedance-2-0-mini-260615", res, hasVideo))
+		}
+	}
+	require.NotEmpty(t, ValidateSeedanceResolutionForModel("doubao-seedance-2-0-mini-260615", "1080p", false))
+
+	// 2.5 的 480p/720p/1080p 两种输入组合均支持。
+	for _, hasVideo := range []bool{false, true} {
+		for _, res := range []string{"480p", "720p", "1080p"} {
+			assert.Empty(t, ValidateSeedanceResolutionForModel("doubao-seedance-2-5-260628", res, hasVideo))
+		}
+	}
+	require.NotEmpty(t, ValidateSeedanceResolutionForModel("doubao-seedance-2-5-260628", "4k", false))
+
+	// 2-0 含全部 8 个组合：全部放行
+	for _, hasVideo := range []bool{false, true} {
+		for _, res := range []string{"480p", "720p", "1080p", "4k"} {
 			assert.Empty(t, ValidateSeedanceResolutionForModel("doubao-seedance-2-0-260128", res, hasVideo),
 				"2-0 %s hasVideo=%t 必须放行", res, hasVideo)
 		}

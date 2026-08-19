@@ -18,6 +18,8 @@ var ModelList = []string{
 	"doubao-seedance-1-5-pro-251215",
 	"doubao-seedance-2-0-260128",
 	"doubao-seedance-2-0-fast-260128",
+	"doubao-seedance-2-0-mini-260615",
+	"doubao-seedance-2-5-260628",
 }
 
 var ChannelName = "doubao-video"
@@ -131,7 +133,10 @@ func setSeedanceUnpricedMultiplierForTest(v float64) {
 	unpricedMultiplierOverride = v
 }
 
-// videoPriceKey 价格表的键：输出分辨率档（is1080p/is4k 均为 false 即 480p/720p 基准档）、输入是否含视频。
+// videoPriceKey 价格表的键：输出分辨率档与输入是否含视频。
+// 零值键表示 480p/720p（以及未显式指定分辨率时采用的基准档）且无视频输入。
+// 480p/720p 的每秒价格因生成 Token 数不同而不同，但每 Token 单价相同，
+// 因此两者共用一个计费档位。
 type videoPriceKey struct {
 	is1080p  bool
 	is4k     bool
@@ -151,9 +156,27 @@ var videoPriceTable = map[string]map[videoPriceKey]float64{
 		{is4k: true, hasVideo: true}:     16.0,
 	},
 	"doubao-seedance-2-0-fast-260128": {
-		{hasVideo: false}: 37.0,
-		{hasVideo: true}:  22.0,
+		{hasVideo: false}: 28.0,
+		{hasVideo: true}:  16.6,
 	},
+	"doubao-seedance-2-0-mini-260615": {
+		{hasVideo: false}: 9.5,
+		{hasVideo: true}:  5.8,
+	},
+	"doubao-seedance-2-5-260628": {
+		{hasVideo: false}:                70.7,
+		{hasVideo: true}:                 42.4,
+		{is1080p: true, hasVideo: false}: 77.8,
+		{is1080p: true, hasVideo: true}:  46.5,
+	},
+}
+
+func seedanceVideoPriceKey(tier string, hasVideo bool) videoPriceKey {
+	return videoPriceKey{
+		is1080p:  tier == "1080p",
+		is4k:     tier == "4k",
+		hasVideo: hasVideo,
+	}
 }
 
 // GetVideoInputRatio 返回指定模型在给定输出分辨率/是否含视频输入下，相对基准价的
@@ -172,7 +195,7 @@ func GetVideoInputRatio(modelName, resolution string, hasVideo bool) (float64, b
 	if !ok {
 		return 1.0, true // 未知分辨率：调用方应走校验 400 / fail closed
 	}
-	price, ok := prices[videoPriceKey{is1080p: tier == "1080p", is4k: tier == "4k", hasVideo: hasVideo}]
+	price, ok := prices[seedanceVideoPriceKey(tier, hasVideo)]
 	if !ok || price <= 0 {
 		// 未配置的组合（如 fast 无 1080p/4k，上游会自行报错）按基准价计费即可。
 		return 1.0, true
@@ -192,6 +215,10 @@ var seedancePublicAliases = map[string]string{
 	"doubao-seedance-2-0":      "doubao-seedance-2-0-260128",
 	"doubao-seedance-2.0-fast": "doubao-seedance-2-0-fast-260128",
 	"doubao-seedance-2-0-fast": "doubao-seedance-2-0-fast-260128",
+	"doubao-seedance-2.0-mini": "doubao-seedance-2-0-mini-260615",
+	"doubao-seedance-2-0-mini": "doubao-seedance-2-0-mini-260615",
+	"doubao-seedance-2.5":      "doubao-seedance-2-5-260628",
+	"doubao-seedance-2-5":      "doubao-seedance-2-5-260628",
 }
 
 // ResolveSeedancePriceModel 解析用于价格表选择的规范模型版本，优先级：
@@ -232,9 +259,9 @@ func HasSeedancePriceTable(modelVersion string) bool {
 type DurationParseOutcome int
 
 const (
-	DurationParseOK DurationParseOutcome = iota // 可可靠解析且 >0
-	DurationParseMissing                        // 未提供（上游用默认值，合法请求）
-	DurationParseUnparsable                     // 提供了但无法解析/非法（发送上游前 400）
+	DurationParseOK         DurationParseOutcome = iota // 可可靠解析且 >0
+	DurationParseMissing                                // 未提供（上游用默认值，合法请求）
+	DurationParseUnparsable                             // 提供了但无法解析/非法（发送上游前 400）
 )
 
 // ResolveSeedanceDurationEx 解析生成秒数，三态返回（预扣与校验同源）。
@@ -479,7 +506,7 @@ func EstimateSeedancePricing(params SeedanceBillingParams) SeedancePricingEstima
 	actualMultiplier := 1.0
 	comboKnown := false
 	if !est.ResolutionFellBack {
-		if price, ok := prices[videoPriceKey{is1080p: tier == "1080p", is4k: tier == "4k", hasVideo: params.HasVideo}]; ok && price > 0 {
+		if price, ok := prices[seedanceVideoPriceKey(tier, params.HasVideo)]; ok && price > 0 {
 			actualMultiplier = price / base
 			comboKnown = true
 		}
@@ -523,7 +550,7 @@ func EstimateSeedancePricing(params SeedanceBillingParams) SeedancePricingEstima
 	return est
 }
 
-// NormalizeResolution 把原始分辨率归一化为价格表档位（"" = 480p/720p 基准档）。
+// NormalizeResolution 把原始分辨率归一化为价格表档位（"" = 480p/720p/默认基准档）。
 // 未知格式返回 "" 且 ok=false（校验阶段据此 400，不低价预扣后提交）。
 func NormalizeResolution(res string) (tier string, ok bool) {
 	switch strings.ToLower(strings.TrimSpace(res)) {
@@ -560,7 +587,7 @@ func quotaFromSeedanceEstimate(baseQuota int, est SeedancePricingEstimate) (int,
 //   - 有价格表模型：检查价格表中的完整 (分辨率档, hasVideo) 组合——显式档
 //     （1080p/4k）在表内缺失（无论是否视频输入）→ 400（如 fast 模型无
 //     1080p/4k 档）；**基准档（480p/720p/空分辨率）同样检查**：tier=="" 时
-//     映射到零值档键 {is1080p:false, is4k:false}，必须存在对应的 hasVideo
+//     映射到零值档键，必须存在对应的 hasVideo
 //     组合（{hasVideo:false} 由 HasSeedancePriceTable 保证，{hasVideo:true}
 //     必须显式在表内，缺失即 400——空分辨率绝不能绕过 hasVideo 组合检查）；
 //   - 无价格表模型：无法判断支持范围，不拒绝（fail closed，预扣走保守系数）。
@@ -578,9 +605,9 @@ func ValidateSeedanceResolutionForModel(modelVersion, resolution string, hasVide
 	}
 	tier, _ := NormalizeResolution(resolution)
 	prices := videoPriceTable[modelVersion]
-	// 统一检查完整 videoPriceKey：tier=="" 时 is1080p/is4k 均为 false（基准档），
+	// 统一检查完整 videoPriceKey：tier=="" 时所有分辨率标记均为 false（基准档），
 	// 仍必须校验 hasVideo 组合，绝不放行价格表缺失的基准档视频输入。
-	if _, exists := prices[videoPriceKey{is1080p: tier == "1080p", is4k: tier == "4k", hasVideo: hasVideo}]; !exists {
+	if _, exists := prices[seedanceVideoPriceKey(tier, hasVideo)]; !exists {
 		return fmt.Sprintf("resolution %q (hasVideo=%t) not supported by model %s", resolution, hasVideo, modelVersion)
 	}
 	return ""

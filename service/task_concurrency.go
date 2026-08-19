@@ -13,7 +13,7 @@ import (
 // 单用户 Seedance 任务并发名额限制（service 层门面）
 //
 // 职责：
-//   - 读取限制配置（环境变量 SEEDANCE_MAX_CONCURRENT_TASKS，默认 3；0 为不限制）；
+//   - 读取限制配置（环境变量 SEEDANCE_MAX_CONCURRENT_TASKS，默认 0，不限制）；
 //   - 判定渠道/任务是否属于 Seedance 家族（doubao / volcengine 视频渠道）；
 //   - 封装"创建前预留 + 终态释放 + 异常退出兜底对账"的对外入口。
 //
