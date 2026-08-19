@@ -119,8 +119,9 @@ func (a *TaskAdaptor) Init(info *relaycommon.RelayInfo) {
 
 // ValidateRequestAndSetAction parses body, validates fields and sets default action.
 // Seedance 参数支持矩阵（与 constants.go 注释/测试同一契约）：
-//   - 时长：仅允许 {5,10} 秒（SeedanceSupportedDurationsForModel）；提供了但
-//     无法可靠解析（非数字、浮点小数、<=0）→ 400；未提供 → 合法（上游默认）。
+//   - 时长：按模型系列允许（SeedanceSupportedDurationsForModel，2.5: 4–30s、
+//     2.0: 4–15s、未知模型: 5–10s）；提供了但无法可靠解析（非数字、浮点小数、
+//     <=0）→ 400；未提供 → 合法（上游默认）。
 //   - 分辨率：未知格式 → 400；有价格表模型 + 显式档（1080p/4k）在表内缺失 → 400。
 //   - 上述校验全部在发送上游之前完成，绝不"以低价预扣后继续提交"。
 func (a *TaskAdaptor) ValidateRequestAndSetAction(c *gin.Context, info *relaycommon.RelayInfo) (taskErr *taskdto.TaskError) {
@@ -138,12 +139,13 @@ func (a *TaskAdaptor) ValidateRequestAndSetAction(c *gin.Context, info *relaycom
 	switch outcome {
 	case DurationParseUnparsable:
 		return service.TaskErrorWrapperLocal(
-			fmt.Errorf("seedance duration must be a positive integer (5 or 10 seconds)"),
+			fmt.Errorf("seedance duration must be a positive integer within the supported range"),
 			"invalid_seedance_duration", http.StatusBadRequest)
 	case DurationParseOK:
 		if !SeedanceSupportedDurationsForModel(info.OriginModelName)[duration] {
 			return service.TaskErrorWrapperLocal(
-				fmt.Errorf("seedance duration must be one of %v seconds (got %d)", SeedanceSupportedDurationValues, duration),
+				fmt.Errorf("seedance duration must be one of %v seconds (got %d)",
+					SeedanceSupportedDurationListForModel(info.OriginModelName), duration),
 				"invalid_seedance_duration", http.StatusBadRequest)
 		}
 	}

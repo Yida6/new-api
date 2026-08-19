@@ -127,6 +127,7 @@ func TestEstimateSeedancePricing_NewModelCombos(t *testing.T) {
 		{"2.5-480p-i2v", "doubao-seedance-2-5-260628", "480p", true, 70.7, 42.4},
 		{"2.5-720p-t2v", "doubao-seedance-2-5-260628", "720p", false, 70.7, 70.7},
 		{"2.5-720p-i2v", "doubao-seedance-2-5-260628", "720p", true, 70.7, 42.4},
+		// 2.5 官方 2026-08-17 起支持原生 1080p：真实倍率 77.8/70.7、46.5/70.7。
 		{"2.5-1080p-t2v", "doubao-seedance-2-5-260628", "1080p", false, 70.7, 77.8},
 		{"2.5-1080p-i2v", "doubao-seedance-2-5-260628", "1080p", true, 70.7, 46.5},
 	}
@@ -308,13 +309,32 @@ func TestResolveSeedanceDurationEx_TriState(t *testing.T) {
 	assert.Equal(t, DurationParseUnparsable, o)
 }
 
-func TestSeedanceSupportedDurations_OnlyFiveAndTen(t *testing.T) {
-	allowed := SeedanceSupportedDurationsForModel("doubao-seedance-2-0-260128")
-	assert.True(t, allowed[5])
-	assert.True(t, allowed[10])
-	for _, d := range []int{1, 2, 3, 4, 6, 7, 8, 9, 11, 30} {
-		assert.False(t, allowed[d], "%d 秒不在支持矩阵", d)
+func TestSeedanceSupportedDurations_BySeries(t *testing.T) {
+	// 2.0 系列（公开别名与规范版本均可识别）：4–15s
+	for _, m := range []string{"doubao-seedance-2.0", "doubao-seedance-2-0-260128",
+		"doubao-seedance-2-0-fast-260128", "doubao-seedance-2-0-mini-260615"} {
+		allowed := SeedanceSupportedDurationsForModel(m)
+		for _, d := range []int{4, 5, 10, 15} {
+			assert.True(t, allowed[d], "%s 应允许 %d 秒", m, d)
+		}
+		for _, d := range []int{1, 2, 3, 16, 20, 30} {
+			assert.False(t, allowed[d], "%s 不应允许 %d 秒", m, d)
+		}
 	}
+	// 2.5：4–30s（含用户目标 20s）
+	allowed25 := SeedanceSupportedDurationsForModel("doubao-seedance-2.5")
+	for _, d := range []int{4, 5, 10, 15, 20, 30} {
+		assert.True(t, allowed25[d], "2.5 应允许 %d 秒", d)
+	}
+	for _, d := range []int{1, 2, 3, 31, 60} {
+		assert.False(t, allowed25[d], "2.5 不应允许 %d 秒", d)
+	}
+	// 未知模型 fail closed 到保守 {5,10}
+	allowedUnknown := SeedanceSupportedDurationsForModel("doubao-seedance-1-5-pro-251215")
+	assert.True(t, allowedUnknown[5])
+	assert.True(t, allowedUnknown[10])
+	assert.False(t, allowedUnknown[15], "未知模型不得放行 15 秒")
+	assert.False(t, allowedUnknown[20], "未知模型不得放行 20 秒")
 }
 
 // ===========================================================================
@@ -325,23 +345,44 @@ func TestValidateRequestAndSetAction_DurationMatrix(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	a := &TaskAdaptor{}
 
-	for _, sec := range []string{"1", "6", "7", "8", "9", "11", "30"} {
-		body := `{"model":"doubao-seedance-2-0-260128","prompt":"hello","seconds":"` + sec + `"}`
+	// 2.0 系列：允许 4–15s，其余拒绝
+	info2 := &relaycommon.RelayInfo{TaskRelayInfo: &relaycommon.TaskRelayInfo{}, OriginModelName: "doubao-seedance-2.0"}
+	for _, sec := range []string{"1", "2", "3", "16", "17", "30"} {
+		body := `{"model":"doubao-seedance-2.0","prompt":"hello","seconds":"` + sec + `"}`
 		c := &gin.Context{Keys: make(map[string]any)}
 		c.Request = httptest.NewRequest(http.MethodPost, "/v1/video/generations", strings.NewReader(body))
 		c.Request.Header.Set("Content-Type", "application/json")
-		taskErr := a.ValidateRequestAndSetAction(c, &relaycommon.RelayInfo{TaskRelayInfo: &relaycommon.TaskRelayInfo{}})
-		require.NotNil(t, taskErr, "%s 秒必须被拒绝", sec)
+		taskErr := a.ValidateRequestAndSetAction(c, info2)
+		require.NotNil(t, taskErr, "%s 秒必须被拒绝（2.0）", sec)
 		assert.Equal(t, "invalid_seedance_duration", taskErr.Code)
 	}
-	// 5/10 秒合法
-	for _, sec := range []string{"5", "10"} {
-		body := `{"model":"doubao-seedance-2-0-260128","prompt":"hello","seconds":"` + sec + `"}`
+	for _, sec := range []string{"4", "5", "10", "15"} {
+		body := `{"model":"doubao-seedance-2.0","prompt":"hello","seconds":"` + sec + `"}`
 		c := &gin.Context{Keys: make(map[string]any)}
 		c.Request = httptest.NewRequest(http.MethodPost, "/v1/video/generations", strings.NewReader(body))
 		c.Request.Header.Set("Content-Type", "application/json")
-		taskErr := a.ValidateRequestAndSetAction(c, &relaycommon.RelayInfo{TaskRelayInfo: &relaycommon.TaskRelayInfo{}})
-		require.Nil(t, taskErr, "%s 秒必须被允许", sec)
+		taskErr := a.ValidateRequestAndSetAction(c, info2)
+		require.Nil(t, taskErr, "%s 秒必须被允许（2.0）", sec)
+	}
+
+	// 2.5 系列：允许 4–30s（含用户目标 20s），其余拒绝
+	info25 := &relaycommon.RelayInfo{TaskRelayInfo: &relaycommon.TaskRelayInfo{}, OriginModelName: "doubao-seedance-2.5"}
+	for _, sec := range []string{"1", "3", "31", "60"} {
+		body := `{"model":"doubao-seedance-2.5","prompt":"hello","seconds":"` + sec + `"}`
+		c := &gin.Context{Keys: make(map[string]any)}
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/video/generations", strings.NewReader(body))
+		c.Request.Header.Set("Content-Type", "application/json")
+		taskErr := a.ValidateRequestAndSetAction(c, info25)
+		require.NotNil(t, taskErr, "%s 秒必须被拒绝（2.5）", sec)
+		assert.Equal(t, "invalid_seedance_duration", taskErr.Code)
+	}
+	for _, sec := range []string{"4", "10", "20", "30"} {
+		body := `{"model":"doubao-seedance-2.5","prompt":"hello","seconds":"` + sec + `"}`
+		c := &gin.Context{Keys: make(map[string]any)}
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/video/generations", strings.NewReader(body))
+		c.Request.Header.Set("Content-Type", "application/json")
+		taskErr := a.ValidateRequestAndSetAction(c, info25)
+		require.Nil(t, taskErr, "%s 秒必须被允许（2.5）", sec)
 	}
 }
 
@@ -409,7 +450,8 @@ func TestValidateSeedanceResolutionForModel_FullCombinationCheck(t *testing.T) {
 	}
 	require.NotEmpty(t, ValidateSeedanceResolutionForModel("doubao-seedance-2-0-mini-260615", "1080p", false))
 
-	// 2.5 的 480p/720p/1080p 两种输入组合均支持。
+	// 2.5 支持 480p/720p/1080p（官方 2026-08-17 起原生 1080p），无 4k：
+	// 480p/720p/1080p 两种输入组合放行，4k 拒绝。
 	for _, hasVideo := range []bool{false, true} {
 		for _, res := range []string{"480p", "720p", "1080p"} {
 			assert.Empty(t, ValidateSeedanceResolutionForModel("doubao-seedance-2-5-260628", res, hasVideo))

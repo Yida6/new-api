@@ -3,6 +3,7 @@ package doubao
 import (
 	"fmt"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -68,28 +69,50 @@ var ChannelName = "doubao-video"
 // SeedanceBaseDurationSeconds 预扣时长倍率的基准秒数（实测数据点的 5 秒）。
 const SeedanceBaseDurationSeconds = 5
 
-// SeedanceSupportedDurationValues 当前 Seedance 全系模型支持的生成长度集合。
-// 火山方舟 Seedance 系列公开文档支持 5/10 秒；1/6/7/8/9/11 等其余时长上游
-// 必然报错，校验阶段直接 400。若未来某模型支持其他时长，在
-// SeedanceSupportedDurationsForModel 中按模型显式扩展。
+// SeedanceSupportedDurationValues 未知模型的保守允许时长集合（fail closed）。
+// 有明确系列的模型按 SeedanceSupportedDurationsForModel 的差异化范围校验。
+// 依据火山方舟官方文档（2026-08-07 Seedance 2.5 API 公测）：
+//   - Seedance 2.5：原生 4–30 秒单次直出（30s 直出是 2.5 核心能力）；
+//   - Seedance 2.0 系列：4–15 秒。
+// 不在允许集合内的时长在发送上游前直接 400（绝不"以低价预扣后继续提交"）。
 var SeedanceSupportedDurationValues = []int{5, 10}
 
-// SeedanceSupportedDurationsForModel 返回指定模型的允许时长集合（当前全系
-// 一致；扩展点：未来可按模型差异化）。未知模型默认 {5,10}（fail closed 到
-// 文档支持集合，绝不放行文档外的时长）。
-func SeedanceSupportedDurationsForModel(_ string) map[int]bool {
-	m := make(map[int]bool, len(SeedanceSupportedDurationValues))
-	for _, d := range SeedanceSupportedDurationValues {
-		m[d] = true
+// SeedanceSupportedDurationsForModel 返回指定模型的允许时长集合（按系列差异化）。
+// 模型名先经 ResolveSeedancePriceModel 归一化（公开别名与规范版本均可识别）；
+// 无法识别归属系列的模型 fail closed 到保守集合 {5,10}，绝不放行文档外的时长。
+func SeedanceSupportedDurationsForModel(modelName string) map[int]bool {
+	version := ResolveSeedancePriceModel(modelName, modelName)
+	lo, hi := 5, 10
+	switch {
+	case strings.Contains(version, "2-5"):
+		lo, hi = 4, 30 // Seedance 2.5 原生 4–30s
+	case strings.Contains(version, "2-0"):
+		lo, hi = 4, 15 // Seedance 2.0 系列 4–15s
 	}
-	return m
+	set := make(map[int]bool, hi-lo+1)
+	for d := lo; d <= hi; d++ {
+		set[d] = true
+	}
+	return set
+}
+
+// SeedanceSupportedDurationListForModel 返回指定模型升序的允许时长列表
+// （用于校验错误消息与测试断言）。
+func SeedanceSupportedDurationListForModel(modelName string) []int {
+	set := SeedanceSupportedDurationsForModel(modelName)
+	list := make([]int, 0, len(set))
+	for d := range set {
+		list = append(list, d)
+	}
+	sort.Ints(list)
+	return list
 }
 
 // SeedanceMaxSupportedDurationSeconds 本地允许的 Seedance 生成时长上限。
-// 火山方舟 Seedance 系列公开文档支持 5/10 秒；大于该值的时长上游必然报错，
-// 本地先行拒绝。生产可按需调整（SEEDANCE_MAX_SUPPORTED_DURATION_SECONDS，
-// common/init.go 初始化）。注意：这是"上限"（兼容旧配置语义），实际校验
-// 用 SeedanceSupportedDurationsForModel 的允许集合（5/10）。
+// 该值仅作旧配置兼容的"上限"语义，实际校验以
+// SeedanceSupportedDurationsForModel 的按系列允许集合为准（2.5: 4–30s、
+// 2.0: 4–15s、未知模型: 5–10s）。生产可按需调整
+// （SEEDANCE_MAX_SUPPORTED_DURATION_SECONDS，common/init.go 初始化）。
 // 注意：通用异步任务校验（relay/common.MaxTaskDurationSeconds=3600）允许更宽
 // 范围，此处是 Seedance 家族收窄后的上限。
 func SeedanceMaxSupportedDurationSeconds() int {
@@ -164,6 +187,8 @@ var videoPriceTable = map[string]map[videoPriceKey]float64{
 		{hasVideo: true}:  5.8,
 	},
 	"doubao-seedance-2-5-260628": {
+		// 官方 2026-08-17 起支持原生 1080p 输出（10-bit 色深，API 同步上线）；
+		// 8-07 公测时仅 480p/720p。4k 不支持，故无 4k 档（校验层对显式 4k 直接 400）。
 		{hasVideo: false}:                70.7,
 		{hasVideo: true}:                 42.4,
 		{is1080p: true, hasVideo: false}: 77.8,
