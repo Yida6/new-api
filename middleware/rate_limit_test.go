@@ -223,3 +223,47 @@ func TestRedisFailurePolicies(t *testing.T) {
 	assert.Empty(t, userResponse.Body.String())
 	assert.Equal(t, http.StatusNoContent, performRateLimitRequest(router, "/email", "192.0.2.62:12345").Code)
 }
+
+func TestRateLimitIPWhitelistBypassesLimiter(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	useRateLimitMiniRedis(t)
+
+	previousWhitelist := common.RateLimitIPWhitelist
+	common.RateLimitIPWhitelist = []string{"192.0.2.0/24", "203.0.113.7"}
+	t.Cleanup(func() { common.RateLimitIPWhitelist = previousWhitelist })
+
+	router := gin.New()
+	require.NoError(t, router.SetTrustedProxies(nil))
+	router.GET("/limited", rateLimitFactory(1, 37, "TEST"), func(c *gin.Context) {
+		c.Status(http.StatusNoContent)
+	})
+
+	// CIDR-matched whitelist IP is never limited even after many requests.
+	for i := 0; i < 5; i++ {
+		assert.Equal(t, http.StatusNoContent, performRateLimitRequest(router, "/limited", "192.0.2.50:12345").Code)
+	}
+	// Exact-IP whitelist entry is also bypassed.
+	assert.Equal(t, http.StatusNoContent, performRateLimitRequest(router, "/limited", "203.0.113.7:12345").Code)
+
+	// Non-whitelisted IP is still rate limited as before.
+	assert.Equal(t, http.StatusNoContent, performRateLimitRequest(router, "/limited", "198.51.100.50:12345").Code)
+	assert.Equal(t, http.StatusTooManyRequests, performRateLimitRequest(router, "/limited", "198.51.100.50:12345").Code)
+}
+
+func TestRateLimitIPWhitelistEmptyKeepsLimiting(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	useRateLimitMiniRedis(t)
+
+	previousWhitelist := common.RateLimitIPWhitelist
+	common.RateLimitIPWhitelist = nil
+	t.Cleanup(func() { common.RateLimitIPWhitelist = previousWhitelist })
+
+	router := gin.New()
+	require.NoError(t, router.SetTrustedProxies(nil))
+	router.GET("/limited", rateLimitFactory(1, 37, "TEST"), func(c *gin.Context) {
+		c.Status(http.StatusNoContent)
+	})
+
+	assert.Equal(t, http.StatusNoContent, performRateLimitRequest(router, "/limited", "192.0.2.80:12345").Code)
+	assert.Equal(t, http.StatusTooManyRequests, performRateLimitRequest(router, "/limited", "192.0.2.80:12345").Code)
+}

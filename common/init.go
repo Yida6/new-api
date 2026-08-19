@@ -133,6 +133,17 @@ func InitEnv() {
 	SearchRateLimitEnable = GetEnvOrDefaultBool("SEARCH_RATE_LIMIT_ENABLE", true)
 	SearchRateLimitNum = GetEnvOrDefault("SEARCH_RATE_LIMIT", 10)
 	SearchRateLimitDuration = int64(GetEnvOrDefault("SEARCH_RATE_LIMIT_DURATION", 60))
+
+	// Rate-limit IP whitelist: comma-separated IPs or CIDRs exempted from all
+	// rate limits (e.g. "1.2.3.4,10.0.0.0/8"). Empty means no exemption.
+	rawWhitelist := GetEnvOrDefaultString("RATE_LIMIT_IP_WHITELIST", "")
+	if strings.TrimSpace(rawWhitelist) != "" {
+		for _, item := range strings.Split(rawWhitelist, ",") {
+			if trimmed := strings.TrimSpace(item); trimmed != "" {
+				RateLimitIPWhitelist = append(RateLimitIPWhitelist, trimmed)
+			}
+		}
+	}
 	initConstantEnv()
 }
 

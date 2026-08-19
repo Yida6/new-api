@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"strconv"
 
@@ -144,15 +145,37 @@ func writeRateLimited(c *gin.Context, retryAfterSeconds int64) {
 	c.Abort()
 }
 
+// rateLimitIPWhitelisted reports whether the request client IP is exempted
+// from all rate limits via the RATE_LIMIT_IP_WHITELIST env var. The whitelist
+// accepts single IPs and CIDR ranges.
+func rateLimitIPWhitelisted(c *gin.Context) bool {
+	if len(common.RateLimitIPWhitelist) == 0 {
+		return false
+	}
+	ip := net.ParseIP(c.ClientIP())
+	if ip == nil {
+		return false
+	}
+	return common.IsIpInCIDRList(ip, common.RateLimitIPWhitelist)
+}
+
 func rateLimitFactory(maxRequestNum int, duration int64, mark string) func(c *gin.Context) {
 	if common.RedisEnabled {
 		return func(c *gin.Context) {
+			if rateLimitIPWhitelisted(c) {
+				c.Next()
+				return
+			}
 			redisRateLimiter(c, maxRequestNum, duration, mark)
 		}
 	}
 	// It's safe to call multi times.
 	inMemoryRateLimiter.Init(common.RateLimitKeyExpirationDuration)
 	return func(c *gin.Context) {
+		if rateLimitIPWhitelisted(c) {
+			c.Next()
+			return
+		}
 		memoryRateLimiter(c, maxRequestNum, duration, mark)
 	}
 }

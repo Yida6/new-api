@@ -208,6 +208,11 @@ var (
 	CriticalRateLimitNum            = 20
 	CriticalRateLimitDuration int64 = 20 * 60
 
+	// RateLimitIPWhitelist holds IPs/CIDRs exempted from all rate limits,
+	// parsed from the comma-separated RATE_LIMIT_IP_WHITELIST env var.
+	// Empty means no exemption.
+	RateLimitIPWhitelist []string
+
 	UploadRateLimitNum            = 10
 	UploadRateLimitDuration int64 = 60
 
