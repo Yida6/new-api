@@ -257,6 +257,9 @@ func SetApiRouter(router *gin.Engine) {
 			tokenRoute.POST("/", controller.AddToken)
 			tokenRoute.PUT("/", controller.UpdateToken)
 			tokenRoute.DELETE("/:id", controller.DeleteToken)
+			// 兼容前端 api.ts 中 `/api/token/${id}/`(尾斜杠)的 DELETE 请求,
+			// 否则 gin 默认 404 导致前端展示"发生意外错误"。
+			tokenRoute.DELETE("/:id/", controller.DeleteToken)
 			tokenRoute.POST("/batch", controller.DeleteTokenBatch)
 			tokenRoute.POST("/batch/keys", middleware.CriticalRateLimit(), middleware.DisableCache(), controller.GetTokenKeysBatch)
 		}
