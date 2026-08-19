@@ -36,11 +36,14 @@
 - [x] 当前数据库已创建 2 个独立渠道、1 个模型元数据、2 个受限测试 Token，并完成 2 个 Seedance 成功任务
 - [x] 首批目标地区确定为中亚地区；第二阶段服务器区域仍需结合中亚用户访问延迟与到火山方舟 Endpoint 的实测结果选择
 - [x] 首发阶段不启用在线支付：不确认支付合规条款，不配置任何支付网关凭据，仅由管理员向受限测试账号发放额度
+- [x] 已在 VPS `2.24.120.8` 完成生产部署，正式域名为 `globalaiclient.com`，Caddy、应用、PostgreSQL 16 和 Redis 7 容器运行健康
+- [x] 本地开发数据库已迁移至生产 PostgreSQL；生产环境保持关闭注册和密码注册，并清除迁移带入的浏览器会话
+- [x] 生产站点已启用 JadeRoute 名称与标志，首页定位统一调整为“主流大模型”API 基础设施
 - [ ] 管理员尚未启用 Passkey 或 2FA
 - [x] 确定首批目标国家或地区：中亚地区 `P0`
 - [ ] 确定计划灰度日期和正式开放日期 `P1`
 
-### 0.1 功能实现审计（更新至 2026-08-17）
+### 0.1 功能实现审计（更新至 2026-08-18）
 
 | 功能 | 代码状态 | 当前实际状态 | 结论 |
 |---|---|---|---|
@@ -67,12 +70,12 @@
 | 全站 Seedance 成本熔断 | `【已有】` | 已实现任务预估成本上限与拒绝逻辑 | 生产阈值确认和超限负向测试待补 |
 | 视频转存对象存储/CDN | `【未实现】` | 当前主要保存或代理上游结果地址 | P1 二开 |
 | PostgreSQL / Redis | `【已有】` | 本地容器运行，PostgreSQL 健康；均未暴露主机端口 | 本地已完成 |
-| 生产 Compose | `【已有模板】` | 仍含默认密码、`latest` 等示例配置 | 尚未生产化 |
-| 健康接口 `/api/status` | `【已有】` | 本地可访问 | 已实现 |
+| 生产 Compose | `【已部署】` | `/opt/new-api/deploy/compose.prod.yml` 使用独立后端/前端网络、持久化卷、健康检查、日志轮转和版本镜像 | 已生产化并部署 |
+| 健康接口 `/api/status` | `【已有/已验证】` | 生产域名可访问，应用容器健康检查通过 | 已实现并完成生产验证 |
 | 前端类型检查与生产构建 | `【已有】` | `bun run typecheck`、`bun run build` 已通过 | 当前通过 |
 | 前端 lint | `【已有工具】` | `bun run lint` 未通过，仓库存在多处现有规则错误 | 尚未完成 |
 | 后端应用与 relaykit 构建 | `【已有】` | 应用入口和独立 `relaykit` 模块构建通过 | 当前通过 |
-| 容器监控、告警和自动备份 | `【外部】` | 尚未配置生产设施 | 部署阶段完成 |
+| 容器监控、告警和自动备份 | `【部分完成】` | 已配置容器健康检查、日志轮转和每日 PostgreSQL 备份；外部资源监控与异常告警待配置 | 备份已运行，监控告警待完善 |
 
 > 2026-08-11 测试：在后端开发容器中执行 `go test -p 1 ./service ./relay/channel/task/doubao ./middleware ./model`。除豆包视频适配包暂无独立测试文件外，其余目标包均通过。
 >
@@ -185,15 +188,15 @@
 ### 2.1 生产部署文件
 
 - [x] 固定首个中亚部署源码基线：Git 标签 `deploy-central-asia-20260817-rc1` `P0`
-- [ ] `【已有模板，需生产化】` 单独准备生产 Compose，不复用 `docker-compose.dev.yml` `P0`
-- [ ] 从标签 `deploy-central-asia-20260817-rc1` 构建生产镜像，记录镜像 `sha256` 摘要，并在生产 Compose 中按摘要引用，不使用不可控的 `latest` `P0`
-- [ ] PostgreSQL、Redis 和应用使用不同的强随机密码 `P0`
-- [ ] 生成足够长的随机 `SESSION_SECRET` `P0`
-- [ ] 密钥只通过生产环境变量或密钥管理系统注入 `P0`
-- [ ] 设置 `GIN_MODE=release`，关闭 `DEBUG` 和 `ENABLE_PPROF` `P0`
-- [ ] 保持 `TLS_INSECURE_SKIP_VERIFY=false` `P0`
+- [x] `【已生产化】` 单独准备生产 Compose，不复用 `docker-compose.dev.yml` `P0`
+- [x] 从固定 Git Commit `579f677b` 构建版本镜像 `new-api-central-asia:579f677b`，记录摘要 `sha256:4c6e72794fe4e430d8b6896be26baff9ac3384a13e348204787552f5c07222e9`，未使用 `latest` `P0`
+- [x] PostgreSQL、Redis 和应用使用不同的强随机密码；两项密码长度均为 48，`SESSION_SECRET` 长度为 96，三者互不相同 `P0`
+- [x] 生成足够长的随机 `SESSION_SECRET` `P0`
+- [x] 密钥通过权限为 `0600` 的生产 `.env` 注入，未写入 Compose 文件 `P0`
+- [x] 设置 `GIN_MODE=release`，关闭 `DEBUG` 和 `ENABLE_PPROF` `P0`
+- [x] 保持 `TLS_INSECURE_SKIP_VERIFY=false` `P0`
 - [ ] 确认生产数据库未确认支付合规条款，Stripe、Creem、Waffo、Waffo Pancake、易支付的凭据均为空，`WaffoEnabled=false`、`PayAddress`/`TopUpLink` 为空，并验证 `/api/user/topup/info` 返回所有在线支付开关为 `false` `P0`
-- [ ] 设置 `TZ=UTC` 和明确的 `NODE_NAME` `P1`
+- [x] 设置 `TZ=UTC` 和明确的 `NODE_NAME=new-api-prod-1` `P1`
 - [ ] 配置合理的请求、任务轮询和上游连接超时 `P1`
 
 生产环境变量至少包含：
@@ -216,30 +219,30 @@ NODE_NAME=new-api-prod-1
 ### 2.2 数据库与 Redis
 
 - [ ] PostgreSQL 使用独立业务账号，不使用超级用户 `P0`
-- [ ] PostgreSQL 和 Redis 只允许内部网络访问 `P0`
-- [ ] PostgreSQL 使用持久化磁盘或 Docker Volume `P0`
-- [ ] Redis 开启密码认证并使用持久化 Volume `P0`
+- [x] PostgreSQL 和 Redis 只允许 Docker 内部网络访问，主机未监听 5432/6379 `P0`
+- [x] PostgreSQL 使用持久化 Docker Volume `P0`
+- [x] Redis 开启密码认证并使用持久化 Docker Volume `P0`
 - [ ] 在生产数据库副本上验证自动迁移 `P0`
-- [ ] 设置 PostgreSQL 每日自动备份 `P0`
+- [x] 设置 PostgreSQL 每日自动备份：`/etc/cron.d/new-api-backup` 每日 03:15 UTC 执行 `backup.sh` `P0`
 - [ ] 将备份保存到服务器之外的位置 `P0`
 - [ ] 完成至少一次数据库恢复演练 `P0`
 
 ### 2.3 域名与 HTTPS
 
-- [ ] 准备正式域名并完成 DNS 解析 `P0`
-- [ ] 使用 Nginx 作为唯一公网入口 `P0`
-- [ ] 配置可信 TLS 证书和自动续期 `P0`
-- [ ] 仅开放 80/443 和必要的管理端口 `P0`
-- [ ] 不直接暴露应用 3000、PostgreSQL 5432 和 Redis 6379 `P0`
-- [ ] 设置 `SESSION_COOKIE_SECURE=true` `P0`
-- [ ] 设置准确的 `SESSION_COOKIE_TRUSTED_URL` 和 `TRUSTED_PROXIES` `P0`
+- [x] 正式域名 `globalaiclient.com` 与 `www.globalaiclient.com` 已完成 DNS 解析 `P0`
+- [x] 使用 Caddy 作为唯一 Web 公网入口 `P0`
+- [x] 配置可信 TLS 证书和自动续期，两个域名 HTTPS 均返回 200 `P0`
+- [x] 仅监听 80/443 和必要的 SSH 管理端口 22 `P0`
+- [x] 不直接暴露应用 3000、PostgreSQL 5432 和 Redis 6379 `P0`
+- [x] 设置 `SESSION_COOKIE_SECURE=true` `P0`
+- [x] 设置准确的 `SESSION_COOKIE_TRUSTED_URL` 和 `TRUSTED_PROXIES` `P0`
 
 ### 2.4 已有日志与生产监控
 
 - [x] `【已有】` 项目支持 API 请求与消费日志
 - [x] `【已有】` 项目支持 Seedance 任务、扣费、差额结算和退款日志
 - [x] `【已有】` 项目支持用户、模型、渠道、Token、额度和错误信息查询
-- [ ] `【配置】` 配置应用和容器日志轮转，防止磁盘写满 `P0`
+- [x] `【配置】` 应用容器统一使用 `json-file` 日志轮转，单文件 20 MB、保留 5 个文件 `P0`
 - [ ] `【验证】` 确认生产日志不会记录完整用户 Token 和上游密钥 `P0`
   - 代码与自动化测试已确认数据库落盘、文件/控制台、系统日志及日志 API 会脱敏 Endpoint ID/API Key；部署后仍需使用生产配置完成日志抽检，并单独确认完整用户 Token 不会落盘。
 - [ ] `【外部】` 监控健康接口 `/api/status` `P0`
@@ -287,10 +290,11 @@ NODE_NAME=new-api-prod-1
 - [ ] 先只允许管理员和少量测试账号访问 `P0`
 - [ ] 完成一次“注册 → 创建 Token → 创建视频 → 查询状态 → 下载视频”的全流程 `P0`
 - [ ] 连续运行至少 24 小时，确认没有异常重启和持续错误 `P1`
-- [ ] 检查数据库备份确实生成且可以恢复 `P0`
+- [x] 检查数据库备份确实生成；当前已保留 8 份压缩 SQL 备份 `P0`
+- [ ] 使用最新生产备份完成隔离恢复演练 `P0`
 - [ ] 检查 HTTPS、Session、真实客户端 IP 和任务查询 `P0`
 - [ ] 准备一条命令恢复上一个应用镜像 `P0`
-- [ ] 记录当前数据库备份和应用版本 `P0`
+- [x] 记录当前数据库备份和应用版本：`newapi-20260818T023223Z.sql.gz` / `new-api-central-asia:579f677b` `P0`
 
 ## 4. 第四阶段：正式开放后的持续维护
 
@@ -314,12 +318,12 @@ NODE_NAME=new-api-prod-1
 |---|---|
 | 使用范围 | 面向海外用户的公网服务 |
 | 首批目标国家或地区 | 中亚地区；具体首发国家名单待灰度计划确认 |
-| 服务器系统 | 待确定，建议 Ubuntu 24.04 LTS |
-| CPU / 内存 / 磁盘 | 待确定 |
+| 服务器系统 | Ubuntu 24.04.4 LTS |
+| CPU / 内存 / 磁盘 | 2 vCPU / 7.8 GiB / 96 GB |
 | 部署区域 | 面向中亚选址；根据中亚用户访问延迟与到方舟 Endpoint 的实测延迟确定具体 Region |
-| 正式域名 | 待确定 |
-| 固定部署源码版本 | Git 标签 `deploy-central-asia-20260817-rc1`；部署时以该标签解析出的唯一 Commit 为准 |
-| 生产镜像 | 待从固定 Git 标签构建并记录镜像 `sha256` 摘要 |
+| 正式域名 | `https://globalaiclient.com`；`https://www.globalaiclient.com` |
+| 固定部署源码版本 | 当前生产 Commit `579f677b`；首个部署候选基线标签为 `deploy-central-asia-20260817-rc1` |
+| 生产镜像 | `new-api-central-asia:579f677b`；`sha256:4c6e72794fe4e430d8b6896be26baff9ac3384a13e348204787552f5c07222e9` |
 | 首期模型 | Seedance 2.0；Seedance 2.0 Fast 按需 |
 | 对外模型名 | `doubao-seedance-2.0` |
 | 上游模型版本 | `doubao-seedance-2-0-260128` |
@@ -330,12 +334,12 @@ NODE_NAME=new-api-prod-1
 | 单次验证结算 | 50638 tokens，New API 配额 159545，约 `$0.3191` / `¥2.33` |
 | 预计用户数 | 待确定 |
 | 峰值并发 | 待确定 |
-| 是否开放注册 | 第二阶段不开放，仅管理员和受限测试账号访问 |
+| 是否开放注册 | 已关闭注册和密码注册，仅管理员和受限测试账号访问 |
 | 是否收费 | 首发阶段不启用在线支付；测试额度由管理员发放 |
 | 邮件服务 | 待确定 |
 | 支付方式 | 暂不启用；所有在线支付网关保持未配置和关闭状态 |
 | 监控告警渠道 | 待确定 |
-| 备份保存位置 | 待确定 |
+| 备份保存位置 | VPS 本机 `/opt/new-api/backups`；异机备份待配置 |
 | 计划灰度日期 | 待确定 |
 | 计划正式开放日期 | 待确定 |
 
@@ -346,13 +350,27 @@ NODE_NAME=new-api-prod-1
 | 测试 | `test` | `seedance-test` | `doubao-seedance-2.0` | 5 秒 / 480P / 16:9 | `SUCCESS` |
 | 生产 | `prod` | `seedance-prod` | `doubao-seedance-2.0` | 5 秒 / 480P / 16:9 / 无音频 | `SUCCESS` |
 
+### 5.2 2026-08-18 生产部署记录
+
+| 项目 | 验证结果 |
+|---|---|
+| 站点品牌 | `JadeRoute`；Logo 为 `/brand/jaderoute-mark.svg` |
+| 首页定位 | 中文页面统一使用“主流大模型”表述，不再使用“国产大模型”定位 |
+| 生产服务 | Caddy、New API、PostgreSQL 16、Redis 7 均运行；New API 容器健康 |
+| HTTP 验证 | 主域名、`www` 域名、文档页及品牌 SVG/PNG 均返回 200 |
+| 生产配置 | `ServerAddress=https://globalaiclient.com`，注册和密码注册关闭，迁移会话已清空 |
+| 数据迁移 | `users=2`、`channels=2`、`tokens=2`、`tasks=2`、`logs=54` |
+| 发布前备份 | `/opt/new-api/backups/newapi-20260818T023223Z.sql.gz` |
+| 应用版本 | Git Commit `579f677b`，镜像 `new-api-central-asia:579f677b` |
+| 发布验证 | 首页 200，`/api/status` 返回 `system_name=JadeRoute` 与新 Logo，最近日志未发现 `ERR`、`panic` 或 `fatal` |
+
 ## 6. 正式开放门禁
 
 只有以下项目全部完成后才开放公网用户：
 
 - [ ] 所有 `P0` 项目已完成
-- [ ] 生产 Compose、域名、HTTPS、Session 和代理配置正确
-- [ ] PostgreSQL 与 Redis 未暴露公网
+- [x] 生产 Compose、域名、HTTPS、Session 和代理配置正确
+- [x] PostgreSQL 与 Redis 未暴露公网
 - [ ] 数据库自动备份成功，并完成恢复演练
 - [ ] 管理员启用强密码和二步验证
 - [x] Seedance 差额补扣已具备余额下限守卫，负余额、欠款清偿和并发冻结回归测试通过（`-race` 因本机缺少 `gcc` 未执行）
