@@ -80,7 +80,11 @@ func VideoProxy(c *gin.Context) {
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 60*time.Second)
+	// 上游取流超时：Seedance 大视频（如 1080p 20s ≈ 46MB）单次流式下载可能
+	// 超过 60s，60s 硬超时会把响应流中途切断——客户端会收到 moov 缺失的截断
+	// MP4（mdat 只写入一部分）。放宽到 600s，与 nginx proxy_read_timeout 对齐，
+	// 同时保留对挂起上游的兜底保护。
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 600*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "", nil)
 	if err != nil {
