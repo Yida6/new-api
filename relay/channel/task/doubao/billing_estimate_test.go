@@ -21,13 +21,27 @@ import (
 // 核心不变量：
 //   - actualPricingMultiplier = 请求实际组合单价 / 基准组合单价（允许 < 1）；
 //   - 预扣 = baseQuota × actualPricingMultiplier × preConsumeMultiplier
-//         = baseQuota × durationSafety × conservativePriceRatio ≥ 实际费用；
+//         = baseQuota × durationSafety × conservativePriceRatio
+//         ≥ baseQuota × officialTokens/250000 × 1.15 × actualPricingMultiplier；
+//   - durationSafety = 火山官方 token 公式（秒×宽×高×24/1024）/ 25 万 × 1.15，
+//     分辨率与真实时长都进入预扣（预扣 ≈ 官方费用 × 1.15，不再恒定 2.3 倍）；
 //   - fallback（缺失/未知档位）只进预扣，绝不进入真实结算。
 // ===========================================================================
 
+// seedanceTestDurationSafety 按新预扣契约计算 durationSafety：
+// = 官方 token 估算（秒×宽×高×24/1024，视频输入翻倍）/ 隐含基准 25 万 × 1.15。
+func seedanceTestDurationSafety(duration int, resolution string, hasVideo ...bool) float64 {
+	tier, _ := NormalizeResolution(resolution)
+	tokens := seedanceOfficialTokens(duration, tier)
+	if len(hasVideo) > 0 && hasVideo[0] {
+		tokens *= 2 // 视频输入：官方按 输入秒+输出秒 计费，保守翻倍
+	}
+	return float64(tokens) / SeedancePreConsumeBaseTokens * SeedancePreConsumeSafetyFactor
+}
+
 // 标准 2.0 的 6 个 (分辨率档, hasVideo) 组合：真实结算倍率 = 组合单价/46
-// （允许 < 1，如 28/46、31/46、26/46、16/46），预扣按表内最大单价比档
-// （51/46）保守预留，绝不低估。
+// （允许 < 1，如 28/46、31/46、26/46、16/46），预扣按官方 token 估算 ×
+// 表内最大单价比档（51/46）保守预留，绝不低估。
 func TestEstimateSeedancePricing_Standard2Combos(t *testing.T) {
 	const model = "doubao-seedance-2-0-260128"
 	const base = 46.0 // 基准组合单价
@@ -65,15 +79,22 @@ func TestEstimateSeedancePricing_Standard2Combos(t *testing.T) {
 				assert.NotContains(t, est.PricingRatios, "size", "倍率 = 1.0 的组合不写 OtherRatio")
 			}
 
-			// 预扣 = baseQuota × actual × preConsumeMultiplier = baseQuota × 51/46
+			// 预扣 = baseQuota × durationSafety(官方token) × 表内最大单价比档（51/46）。
+			// 分辨率进入预扣：1080p/4k 的官方 token 面积大于 720p。
 			baseQuota := 100000
 			preConsume, clamp := quotaFromSeedanceEstimate(baseQuota, est)
 			require.Nil(t, clamp, "常规组合不得触发额度饱和")
-			assert.InDelta(t, float64(baseQuota)*51.0/base, float64(preConsume), 1.0,
-				"预扣 = baseQuota × durationSafety × 表内最大单价比档（51/46）")
-			assert.GreaterOrEqual(t, float64(preConsume)+1.0, float64(baseQuota)*want,
-				"预扣绝不低估真实费用（保守预扣 ≥ baseQuota × actual；QuotaFromFloat 截断 <1 单位）")
-			// 10 秒：durationSafety = 2.0，预扣放大到 base × 2 × 51/46
+			durSafety := seedanceTestDurationSafety(5, tc.resolution, tc.hasVideo)
+			wantPre := float64(baseQuota) * durSafety * 51.0 / base
+			assert.InDelta(t, wantPre, float64(preConsume), 1.0,
+				"预扣 = baseQuota × officialTokens/250000 × 1.15 × 51/46")
+			// 预扣绝不低估真实费用：预扣 = baseQuota×durationSafety×conservative
+			// ≥ 官方估算结算（baseQuota×officialTokens/250000×actual）× 1.13
+			// （officialTokens 与 actualTokens 实测误差 <1%，1.15 安全系数留有余量）。
+			tier, _ := NormalizeResolution(tc.resolution)
+			minSettle := float64(baseQuota) * float64(seedanceOfficialTokens(5, tier)) / SeedancePreConsumeBaseTokens * want * 1.13
+			assert.GreaterOrEqual(t, float64(preConsume)+1.0, minSettle, "预扣绝不低估真实费用")
+			// 10 秒：durationSafety 按官方 token 线性放大（10s = 2×5s token）
 			est10 := EstimateSeedancePricing(SeedanceBillingParams{
 				Model:      model,
 				Resolution: tc.resolution,
@@ -81,16 +102,17 @@ func TestEstimateSeedancePricing_Standard2Combos(t *testing.T) {
 				HasVideo:   tc.hasVideo,
 			})
 			preConsume10, _ := quotaFromSeedanceEstimate(baseQuota, est10)
-			assert.InDelta(t, float64(baseQuota)*2.0*51.0/base, float64(preConsume10), 1.0,
-				"10 秒预扣 = baseQuota × 2 × 51/46")
+			wantPre10 := float64(baseQuota) * seedanceTestDurationSafety(10, tc.resolution, tc.hasVideo) * 51.0 / base
+			assert.InDelta(t, wantPre10, float64(preConsume10), 1.0,
+				"10 秒预扣 = baseQuota × officialTokens(10s)/250000 × 1.15 × 51/46")
 			assert.InDelta(t, want, est10.PricingMultiplier, 1e-9, "真实结算倍率与时长无关（token 已含时长）")
 		})
 	}
 }
 
 // fast 的全部支持组合（基准档 28/16.6）：
-//   - (480p, t2v)：真实倍率 1.0，预扣缓冲 1.0；
-//   - (480p, i2v)：真实倍率 16.6/28（<1），预扣缓冲 = maxRatio(1.0) / (16.6/28)。
+//   - (480p, t2v)：真实倍率 1.0，预扣 = durationSafety(官方 token) × 1.0；
+//   - (480p, i2v)：真实倍率 16.6/28（<1），预扣 = durationSafety × maxRatio(1.0) / (16.6/28)。
 func TestEstimateSeedancePricing_FastCombos(t *testing.T) {
 	const model = "doubao-seedance-2-0-fast-260128"
 	const base = 28.0
@@ -98,7 +120,8 @@ func TestEstimateSeedancePricing_FastCombos(t *testing.T) {
 	est := EstimateSeedancePricing(SeedanceBillingParams{Model: model, Resolution: "480p", Duration: 5, HasVideo: false})
 	require.True(t, est.PricedModel)
 	assert.Equal(t, 1.0, est.PricingMultiplier, "fast 基准文生组合倍率 = 1.0")
-	assert.Equal(t, 1.0, est.PreConsumeMultiplier)
+	assert.InDelta(t, seedanceTestDurationSafety(5, "480p"), est.PreConsumeMultiplier, 1e-9,
+		"fast 基准文生预扣 = durationSafety（官方 token × 1.15 / 25万）")
 	assert.NotContains(t, est.PricingRatios, "size")
 
 	estI2V := EstimateSeedancePricing(SeedanceBillingParams{Model: model, Resolution: "480p", Duration: 5, HasVideo: true})
@@ -106,8 +129,8 @@ func TestEstimateSeedancePricing_FastCombos(t *testing.T) {
 	assert.InDelta(t, 16.6/base, estI2V.PricingMultiplier, 1e-9, "fast 视频输入真实倍率 = 16.6/28（允许 <1）")
 	assert.Contains(t, estI2V.PricingRatios, "size")
 	assert.InDelta(t, 16.6/base, estI2V.PricingRatios["size"], 1e-9)
-	assert.InDelta(t, 1.0/(16.6/base), estI2V.PreConsumeMultiplier, 1e-9,
-		"预扣缓冲 = maxRatio(1.0) / actual（预扣 = base × 1.0，永不低估）")
+	assert.InDelta(t, seedanceTestDurationSafety(5, "480p", true)/(16.6/base), estI2V.PreConsumeMultiplier, 1e-9,
+		"预扣缓冲 = durationSafety × maxRatio(1.0) / actual（预扣 = base × durationSafety，永不低估）")
 }
 
 func TestEstimateSeedancePricing_NewModelCombos(t *testing.T) {
@@ -144,7 +167,7 @@ func TestEstimateSeedancePricing_NewModelCombos(t *testing.T) {
 	}
 }
 
-// 空分辨率（未指定 = 上游默认，合法）：按基准档结算，预扣 = base × dur × maxRatio。
+// 空分辨率（未指定 = 上游默认，合法）：按基准档结算，预扣 = base × durationSafety × maxRatio。
 func TestEstimateSeedancePricing_EmptyResolution(t *testing.T) {
 	est := EstimateSeedancePricing(SeedanceBillingParams{
 		Model: "doubao-seedance-2-0-260128", Resolution: "", Duration: 5, HasVideo: false,
@@ -152,7 +175,8 @@ func TestEstimateSeedancePricing_EmptyResolution(t *testing.T) {
 	require.True(t, est.PricedModel)
 	assert.False(t, est.ResolutionFellBack, "空分辨率 = 未指定，属于基准档而非 fallback")
 	assert.Equal(t, 1.0, est.PricingMultiplier)
-	assert.InDelta(t, 51.0/46.0, est.PreConsumeMultiplier, 1e-9, "5 秒基准档预扣缓冲 = 51/46")
+	assert.InDelta(t, seedanceTestDurationSafety(5, "")*51.0/46.0, est.PreConsumeMultiplier, 1e-9,
+		"5 秒基准档预扣缓冲 = durationSafety × 51/46")
 }
 
 // 未知分辨率：预扣按表内最大单价比档 fail closed，但该 fallback **绝不进入**
@@ -165,7 +189,9 @@ func TestEstimateSeedancePricing_UnknownResolutionFallbackNeverInSettlement(t *t
 	assert.True(t, est.ResolutionFellBack)
 	assert.Equal(t, 1.0, est.PricingMultiplier, "fallback 绝不进入真实结算")
 	assert.Len(t, est.PricingRatios, 0)
-	assert.InDelta(t, 51.0/46.0, est.PreConsumeMultiplier, 1e-9, "预扣按表内最大单价比档 fail closed")
+	// 未知分辨率 → tier 归 ""（720p 面积兜底）：预扣按官方 token + 表内最大档 fail closed
+	assert.InDelta(t, seedanceTestDurationSafety(5, "")*51.0/46.0, est.PreConsumeMultiplier, 1e-9,
+		"预扣按 720p 官方 token 估算 × 表内最大单价比档 fail closed")
 }
 
 // 10 秒任务与固定价格模式：真实结算倍率不含时长；固定价格模式预扣缓冲 = 1.0。
@@ -174,7 +200,8 @@ func TestEstimateSeedancePricing_TenSecondAndFixedPrice(t *testing.T) {
 		Model: "doubao-seedance-2-0-260128", Resolution: "480p", Duration: 10, HasVideo: false,
 	})
 	assert.Equal(t, 1.0, est.PricingMultiplier, "真实结算倍率与时长无关（token 已含时长）")
-	assert.InDelta(t, 2.0*51.0/46.0, est.PreConsumeMultiplier, 1e-9, "10 秒预扣缓冲 = 2 × 51/46")
+	assert.InDelta(t, seedanceTestDurationSafety(10, "480p")*51.0/46.0, est.PreConsumeMultiplier, 1e-9,
+		"10 秒预扣缓冲 = durationSafety(10s 官方 token) × 51/46")
 	assert.NotContains(t, est.PricingRatios, "seconds", "定价倍率绝不包含时长缓冲")
 
 	estFixed := EstimateSeedancePricing(SeedanceBillingParams{
@@ -185,7 +212,7 @@ func TestEstimateSeedancePricing_TenSecondAndFixedPrice(t *testing.T) {
 }
 
 func TestEstimateSeedancePricing_UnpricedModelPreConsumeOnly(t *testing.T) {
-	// 无价格表模型：保守系数只进预扣缓冲（2.0 × 时长 2.0 = 4.0），
+	// 无价格表模型：保守系数只进预扣缓冲（2.0 × durationSafety），
 	// **绝不**写 PricingRatios（不污染真实结算）
 	old := unpricedMultiplierOverride
 	setSeedanceUnpricedMultiplierForTest(2.0)
@@ -196,9 +223,34 @@ func TestEstimateSeedancePricing_UnpricedModelPreConsumeOnly(t *testing.T) {
 		UsePrice: false,
 	})
 	assert.False(t, est.PricedModel)
-	assert.Equal(t, 4.0, est.PreConsumeMultiplier, "无表模型预扣缓冲 = 保守系数 × 时长缓冲")
+	assert.InDelta(t, seedanceTestDurationSafety(10, "")*2.0, est.PreConsumeMultiplier, 1e-9,
+		"无表模型预扣缓冲 = 保守系数 × durationSafety（官方 token × 1.15 / 25万）")
 	assert.Equal(t, 1.0, est.PricingMultiplier, "无表模型真实结算倍率为 1.0（不污染结算）")
 	assert.Len(t, est.PricingRatios, 0)
+}
+
+// 火山官方 token 公式（秒 × 宽 × 高 × fps / 1024）与线上实测结算 token 数对齐：
+// 720p 5s/10s/15s、1080p 20s 四个实测锚点误差 <1%（seedanceOfficialTokens 的
+// 公式依据，见 constants.go）。
+func TestSeedanceOfficialTokens_MatchesLiveMeasurements(t *testing.T) {
+	cases := []struct {
+		duration int
+		res      string
+		want     int64
+	}{
+		{5, "720p", 108000},   // 线上实测 108,900
+		{10, "720p", 216000},  // 线上实测 216,900
+		{15, "720p", 324000},  // 线上实测 324,900
+		{20, "1080p", 972000}, // 线上实测 974,025
+	}
+	for _, tc := range cases {
+		tier, ok := NormalizeResolution(tc.res)
+		require.True(t, ok)
+		got := seedanceOfficialTokens(tc.duration, tier)
+		assert.Equal(t, tc.want, got, "%s %ds 官方 token 估算", tc.res, tc.duration)
+	}
+	// 基准兜底：duration<=0 按 5s
+	assert.Equal(t, int64(108000), seedanceOfficialTokens(0, ""))
 }
 
 func TestEstimateSeedancePricing_QuotaSaturationNoOverflow(t *testing.T) {

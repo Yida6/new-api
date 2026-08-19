@@ -44,16 +44,20 @@ var ChannelName = "doubao-video"
 //     preConsumeMultiplier = durationSafety × conservativePriceRatio /
 //     actualPricingMultiplier，只用于提交前保守预留，绝不进入 totalTokens
 //     结算；固定价格模式（UsePrice）费用固定无超支风险，缓冲=1.0。
+//     durationSafety = 火山官方 token 估算（秒×宽×高×24/1024）/ 隐含基准
+//     25 万 token × 1.15（SeedancePreConsumeSafetyFactor），使预扣 ≈ 官方
+//     费用 × 1.15，分辨率与真实时长都进入预扣（详见 seedanceOfficialTokens）。
 //     从而 预扣 = baseQuota × actualPricingMultiplier × preConsumeMultiplier
-//             = baseQuota × durationSafety × conservativePriceRatio
-//       ≥ baseQuota × durationSafety × actualPricingMultiplier（永不低估）。
+//             = baseQuota × officialTokens/250000 × 1.15 × conservativePriceRatio
+//              ≥ baseQuota × officialTokens/250000 × 1.15 × actualPricingMultiplier
+//                （永不低估）。
 //
 // 保守性说明：
-//  1. 时长：token 数与生成秒数正相关（视频按帧/秒折算 token 是行业通行口径），
-//     以实测锚点 5 秒为基准，时长安全系数 = duration/5（下限 1.0）。即使线性
-//     关系无法被权威文档证明，倍率模式的基础预扣（隐含 25 万 token，见下）
-//     相对实测 5 秒 480P（50638 tokens）已有约 4.9 倍缓冲，时长系数只会在
-//     更长任务上放大该缓冲，不会形成低估窗口。
+//  1. 时长与分辨率：token 数按火山官方公式（秒 × 宽 × 高 × fps / 1024）估算，
+//     4 个实测点（720p 5s/10s/15s、1080p 20s）误差 <1%；预扣在其上叠加 1.15
+//     安全系数（SeedancePreConsumeSafetyFactor），即使个别任务 token 波动
+//     超过 15% 也有兜底，不会形成低估窗口。短时长（如 4s）按实际官方 token
+//     预扣，不再被 5 秒基准抬高。
 //  2. 分辨率/视频输入：conservativePriceRatio 取 videoPriceTable 中该模型
 //     表内最大单价比档——单价比 <1 的档（如 4k 26/46、视频输入 28/46）不能
 //     用来缩小预扣（token 数无法证明同比例减少）。价格表缺失的组合与未收录
@@ -66,8 +70,46 @@ var ChannelName = "doubao-video"
 //     在发送上游前直接返回 400，不允许以低价预扣后继续提交。
 // ---------------------------------------------------------------------------
 
-// SeedanceBaseDurationSeconds 预扣时长倍率的基准秒数（实测数据点的 5 秒）。
+// SeedanceBaseDurationSeconds 预扣 token 估算的兜底秒数（缺失时长时采用）。
 const SeedanceBaseDurationSeconds = 5
+
+// SeedanceFramesPerSecond 火山方舟 Seedance 全系输出帧率（官方固定 24fps）。
+const SeedanceFramesPerSecond = 24
+
+// SeedancePreConsumeBaseTokens 预扣公式的分母：隐含基准 token 数（对应 baseQuota
+// = 每百万 token 价 × 250000/1e6 的定义，见 SeedanceBillingParams 使用处）。
+const SeedancePreConsumeBaseTokens = 250000
+
+// SeedancePreConsumeSafetyFactor 预扣相对火山官方估算费用的安全系数。
+// 官方 token 公式（tokens = 输出秒数 × 宽 × 高 × fps / 1024，文生视频无输入秒）
+// 已被仓库内 4 个实测点验证：720p 5s≈108900 / 10s≈216900 / 15s≈324900、
+// 1080p 20s≈974025，误差 <1%。1.15 覆盖公式误差与计费口径微小波动，保证
+// 预扣 ≥ 真实结算（不低估）——预扣从旧逻辑的恒定 ~2.3 倍冗余降到 ~1.15 倍，
+// 余额占用大幅降低，且分辨率差异（1080p > 720p > 480p）正式进入预扣。
+const SeedancePreConsumeSafetyFactor = 1.15
+
+// seedanceResolutionPixels 各分辨率档的官方输出像素面积：
+// 480p=854×480、720p=1280×720、1080p=1920×1080、4k=3840×2160。
+// tier==""（480p/720p/未指定基准档）保守取 720p 面积（预扣不低估 480p）。
+func seedanceResolutionPixels(tier string) int64 {
+	switch tier {
+	case "1080p":
+		return 1920 * 1080
+	case "4k":
+		return 3840 * 2160
+	default:
+		return 1280 * 720
+	}
+}
+
+// seedanceOfficialTokens 按火山方舟官方 token 公式估算文生视频输出 token 数：
+// tokens = 输出秒数 × 宽 × 高 × fps / 1024。duration<=0 时按基准 5 秒兜底。
+func seedanceOfficialTokens(duration int, tier string) int64 {
+	if duration <= 0 {
+		duration = SeedanceBaseDurationSeconds
+	}
+	return int64(duration) * seedanceResolutionPixels(tier) * SeedanceFramesPerSecond / 1024
+}
 
 // SeedanceSupportedDurationValues 未知模型的保守允许时长集合（fail closed）。
 // 有明确系列的模型按 SeedanceSupportedDurationsForModel 的差异化范围校验。
@@ -488,18 +530,27 @@ func EstimateSeedancePricing(params SeedanceBillingParams) SeedancePricingEstima
 		est.ResolutionFellBack = true // 未知分辨率：校验阶段已先行 400，此处防御性兜底
 	}
 
-	// ---- 时长预扣安全系数（仅预扣；固定价格模式费用固定不加缓冲）----
+	// ---- 时长/分辨率预扣安全系数（仅预扣；固定价格模式费用固定不加缓冲）----
+	// 火山官方 token 公式（tokens = 秒 × 宽 × 高 × fps / 1024，实测误差 <1%），
+	// durationSafety = 官方估算 tokens / 隐含基准 25 万 token × 安全系数 1.15：
+	//   预扣 = baseQuota × officialTokens/250000 × 1.15 × conservativePriceRatio
+	//        ≈ 官方费用 × 1.15 × conservativePriceRatio（旧逻辑为恒定 ~2.3 倍；
+	//        新逻辑下分辨率差异与真实时长都进入预扣，且不再 clamp 到 1.0——
+	//        4s 任务预扣按 4s 官方 token 估算，不再与 5s 同价）。
 	durationSafety := 1.0
 	if !params.UsePrice {
 		duration := params.Duration
 		if duration <= 0 {
-			duration = SeedanceBaseDurationSeconds // 缺失 → 实测基准 5 秒
+			duration = SeedanceBaseDurationSeconds // 缺失 → 官方基准 5 秒
 		}
-		if duration < SeedanceBaseDurationSeconds {
-			duration = SeedanceBaseDurationSeconds
+		tokens := seedanceOfficialTokens(duration, tier)
+		if params.HasVideo {
+			// 视频输入：火山官方按 输入秒数 + 输出秒数 计费（输入视频时长在提交时
+			// 未知），保守按"输入时长 = 输出时长"翻倍估算 token，避免 i2v 预扣低估。
+			tokens *= 2
 		}
-		durationSafety = float64(duration) / SeedanceBaseDurationSeconds
-		if !isFinitePositive(durationSafety) || durationSafety < 1.0 {
+		durationSafety = float64(tokens)/float64(SeedancePreConsumeBaseTokens)*SeedancePreConsumeSafetyFactor
+		if !isFinitePositive(durationSafety) {
 			durationSafety = 1.0
 		}
 	}
