@@ -9,6 +9,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/i18n"
+	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting"
@@ -261,6 +262,33 @@ func GetTokenUsage(c *gin.Context) {
 	})
 }
 
+// validateTokenQuotaAgainstBalance 校验非无限额度 key 的额度不超过用户当前钱包余额。
+// 定位：UX/业务语义校验（防止用户把 key 额度设得远超自身余额）；真正的资金守卫在
+// 计费预扣时（BillingSession.preConsume），因此 GetUserQuota 出错时放行，
+// 避免缓存/DB 抖动误伤建 key。管理员（admin/root）豁免：运营者建 key 不受自身余额约束。
+// 返回 false 时已向客户端写入错误响应，调用方应直接 return。
+func validateTokenQuotaAgainstBalance(c *gin.Context, userId int, token *model.Token) bool {
+	if token.UnlimitedQuota || token.RemainQuota <= 0 {
+		return true
+	}
+	if role := c.GetInt("role"); role == common.RoleAdminUser || role == common.RoleRootUser {
+		return true
+	}
+	userQuota, err := model.GetUserQuota(userId, false)
+	if err != nil {
+		common.SysLog(fmt.Sprintf("failed to get user quota for token quota check (userId=%d): %s", userId, err.Error()))
+		return true
+	}
+	if userQuota < token.RemainQuota {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": fmt.Sprintf("令牌额度不能超过钱包余额（当前余额: %s）", logger.FormatQuota(userQuota)),
+		})
+		return false
+	}
+	return true
+}
+
 func AddToken(c *gin.Context) {
 	request := tokenRequest{}
 	err := c.ShouldBindJSON(&request)
@@ -284,6 +312,10 @@ func AddToken(c *gin.Context) {
 			common.ApiErrorI18n(c, i18n.MsgTokenQuotaExceedMax, map[string]any{"Max": maxQuotaValue})
 			return
 		}
+	}
+	// 非无限额度时，校验额度不超过用户当前钱包余额
+	if !validateTokenQuotaAgainstBalance(c, c.GetInt("id"), &token) {
+		return
 	}
 	// 检查用户令牌数量是否已达上限
 	maxTokens := operation_setting.GetMaxUserTokens()
@@ -378,6 +410,10 @@ func UpdateToken(c *gin.Context) {
 			common.ApiErrorI18n(c, i18n.MsgTokenQuotaExceedMax, map[string]any{"Max": maxQuotaValue})
 			return
 		}
+	}
+	// 非无限额度且非仅改状态时，校验额度不超过用户当前钱包余额
+	if statusOnly == "" && !validateTokenQuotaAgainstBalance(c, userId, &token) {
+		return
 	}
 	cleanToken, err := model.GetTokenByIds(token.Id, userId)
 	if err != nil {
