@@ -122,6 +122,7 @@ import {
   parseChannelConnectionInfo,
   type ChannelConnectionInfo,
 } from '@/lib/channel-connection-info'
+import { getUserModels } from '@/lib/api'
 import { getLobeIcon } from '@/lib/lobe-icon'
 import { ROLE } from '@/lib/roles'
 import { cn } from '@/lib/utils'
@@ -670,10 +671,20 @@ export function ChannelMutateDrawer({
     queryFn: getGroups,
   })
 
-  // Fetch all available models
+  // Fetch all available models (upstream built-in catalog, used as fallback)
   const { data: allModelsData } = useQuery({
     queryKey: ['channel_models'],
     queryFn: getAllModels,
+  })
+
+  // Fetch models the admin has actually created (models table / enabled via
+  // channels). These are the ones shown in the "supported models" selector so
+  // the list stays scoped to created models instead of the full built-in
+  // catalog; custom model names can still be typed thanks to MultiSelect
+  // allowCreate.
+  const { data: createdModelsData } = useQuery({
+    queryKey: ['channel_created_models'],
+    queryFn: getUserModels,
   })
 
   // Fetch prefill model groups
@@ -880,23 +891,35 @@ export function ChannelMutateDrawer({
       ? advancedCustomStats.routeTypeLabels.join(', ')
       : undefined
 
-  // Get all models list
+  // Get all models list (full built-in catalog — kept for the fallback path
+  // when no created models exist yet, e.g. brand-new instance)
   const allModelsList = useMemo(
     () => allModelsData?.data?.map((model) => model.id).filter(Boolean) || [],
     [allModelsData]
   )
 
-  // Get basic models for the current channel type
+  // Get created models (models table / channel-enabled) — the preferred
+  // candidate list for the selector.
+  const createdModelsList = useMemo(
+    () => createdModelsData?.data || [],
+    [createdModelsData]
+  )
+
+  // Basic models for the current channel type, scoped to created models when
+  // available; falls back to the built-in catalog otherwise.
   const basicModels = useMemo(() => {
-    if (!allModelsList.length) return []
+    const candidates = createdModelsList.length
+      ? createdModelsList
+      : allModelsList
+    if (!candidates.length) return []
     // Filter models based on common patterns for specific types
     if (currentType === 1) {
-      return allModelsList.filter(
+      return candidates.filter(
         (model) => model.startsWith('gpt-') || model.startsWith('text-')
       )
     }
-    return allModelsList
-  }, [allModelsList, currentType])
+    return candidates
+  }, [createdModelsList, allModelsList, currentType])
 
   // Get prefill groups
   const prefillGroups = useMemo(
@@ -1140,14 +1163,20 @@ export function ChannelMutateDrawer({
     [currentModelMapping]
   )
 
-  // Transform models to multi-select options
+  // Transform models to multi-select options. Scope the dropdown to created
+  // models (with the already-selected ones merged in); fall back to the full
+  // built-in catalog only when no created models exist. Custom names can
+  // still be typed thanks to MultiSelect allowCreate.
   const modelOptions = useMemo(() => {
-    const allModels = new Set([...allModelsList, ...currentModelsArray])
+    const base = createdModelsList.length
+      ? createdModelsList
+      : allModelsList
+    const allModels = new Set([...base, ...currentModelsArray])
     return [...allModels].map((model) => ({
       value: model,
       label: model,
     }))
-  }, [allModelsList, currentModelsArray])
+  }, [createdModelsList, allModelsList, currentModelsArray])
 
   const modelMappingGuardrail = useMemo<ModelMappingGuardrail>(() => {
     if (!currentModelMapping?.trim()) {
@@ -1489,15 +1518,18 @@ export function ChannelMutateDrawer({
   }, [basicModels, updateModels, t])
 
   const handleFillAllModels = useCallback(() => {
-    if (!allModelsList.length) {
+    const fillModels = createdModelsList.length
+      ? createdModelsList
+      : allModelsList
+    if (!fillModels.length) {
       toast.info(t('No models available'))
       return
     }
-    updateModels(allModelsList)
+    updateModels(fillModels)
     toast.success(
-      t('Filled {{count}} model(s)', { count: allModelsList.length })
+      t('Filled {{count}} model(s)', { count: fillModels.length })
     )
-  }, [allModelsList, updateModels, t])
+  }, [createdModelsList, allModelsList, updateModels, t])
 
   const handleClearModels = useCallback(() => {
     form.setValue('models', '')
@@ -3354,7 +3386,9 @@ export function ChannelMutateDrawer({
                                   variant='outline'
                                   size='sm'
                                   onClick={handleFillAllModels}
-                                  disabled={!allModelsList.length}
+                                  disabled={
+                                    !(createdModelsList.length || allModelsList.length)
+                                  }
                                 >
                                   <Plus
                                     className='mr-2 h-4 w-4'
