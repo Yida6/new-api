@@ -222,10 +222,10 @@ NODE_NAME=new-api-prod-1
 - [x] PostgreSQL 和 Redis 只允许 Docker 内部网络访问，主机未监听 5432/6379 `P0`
 - [x] PostgreSQL 使用持久化 Docker Volume `P0`
 - [x] Redis 开启密码认证并使用持久化 Docker Volume `P0`
-- [ ] 在生产数据库副本上验证自动迁移 `P0`
+- [x] 在生产数据库副本上验证自动迁移 `P0`
 - [x] 设置 PostgreSQL 每日自动备份：`/etc/cron.d/new-api-backup` 每日 03:15 UTC 执行 `backup.sh` `P0`
-- [ ] 将备份保存到服务器之外的位置 `P0`
-- [ ] 完成至少一次数据库恢复演练 `P0`
+- [x] 将备份保存到服务器之外的位置 `P0`
+- [x] 完成至少一次数据库恢复演练 `P0`
 
 ### 2.3 域名与 HTTPS
 
