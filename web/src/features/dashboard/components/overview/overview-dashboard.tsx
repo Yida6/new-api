@@ -50,6 +50,7 @@ import { IconBadge, type IconBadgeTone } from '@/components/ui/icon-badge'
 import { fetchTokenKey, getApiKeys } from '@/features/keys/api'
 import type { ApiKey } from '@/features/keys/types'
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard'
+import { useIsSidebarModuleVisible } from '@/hooks/use-sidebar-config'
 import { getUserModels } from '@/lib/api'
 import { MOTION_TRANSITION } from '@/lib/motion'
 import { ROLE } from '@/lib/roles'
@@ -497,8 +498,15 @@ export function OverviewDashboard() {
     [apiKeysQuery.data]
   )
 
-  const startSteps = useMemo<StartStep[]>(
-    () => [
+  // Honour the user's sidebar_modules / Playground toggle: when the user (or
+  // admin) has hidden the Playground entry, the setup guide must not keep
+  // routing them to /playground, otherwise the click silently enters a page
+  // they intentionally hid. The hook already implements the admin × user
+  // AND gate against URL_TO_CONFIG_MAP['/playground'].
+  const isPlaygroundVisible = useIsSidebarModuleVisible('/playground')
+
+  const startSteps = useMemo<StartStep[]>(() => {
+    const steps: StartStep[] = [
       {
         title: t('Create API Key'),
         description: t('Create a key for your app or service'),
@@ -520,9 +528,13 @@ export function OverviewDashboard() {
         icon: TerminalSquare,
         completed: requestCount > 0,
       },
-    ],
-    [preferredKey, remainQuota, requestCount, t, usedQuota]
-  )
+    ]
+    // Playground hidden (user sidebar setting or admin disable): drop the
+    // playground step instead of pointing it at a hidden route.
+    return isPlaygroundVisible
+      ? steps
+      : steps.filter((step) => step.to !== '/playground')
+  }, [preferredKey, remainQuota, requestCount, t, usedQuota, isPlaygroundVisible])
 
   const quickActions = useMemo<QuickAction[]>(
     () => [
