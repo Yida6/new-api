@@ -292,6 +292,7 @@ func migrateDB() error {
 		&SystemTaskLock{},
 		&TaskSubmitRecovery{},
 		&TaskSubmitLockRow{},
+		&TaskClientIdempotency{},
 		&TaskConcurrencySlot{},
 		&TaskBillingDebt{},
 		&TaskBillingDebtAudit{},

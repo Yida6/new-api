@@ -120,6 +120,7 @@ func setupScenarioDB(t *testing.T) {
 		&model.Task{},
 		&model.TaskSubmitRecovery{},
 		&model.TaskSubmitLockRow{},
+		&model.TaskClientIdempotency{},
 		&model.TaskConcurrencySlot{},
 		&model.SeedanceCostControl{},
 		&model.Ability{},
@@ -167,14 +168,14 @@ func seedScenarioData(t *testing.T, mockURL string, userQuota int) {
 		AffCode:  "scenario-aff-100",
 	}).Error)
 	require.NoError(t, model.DB.Create(&model.Token{
-		Id:            1,
-		UserId:        scenarioUserID,
-		Key:           "sk-scenario-token",
-		Status:        common.TokenStatusEnabled,
-		Name:          "scenario-token",
-		RemainQuota:   scenarioUserQuota,
-		Group:         "default",
-		ExpiredTime:   -1,
+		Id:             1,
+		UserId:         scenarioUserID,
+		Key:            "sk-scenario-token",
+		Status:         common.TokenStatusEnabled,
+		Name:           "scenario-token",
+		RemainQuota:    scenarioUserQuota,
+		Group:          "default",
+		ExpiredTime:    -1,
 		UnlimitedQuota: false,
 	}).Error)
 }
@@ -608,6 +609,64 @@ func TestRelayTaskUpstreamSuccessControl(t *testing.T) {
 	assert.NotContains(t, logs, "test-key", "日志不得泄露渠道 API Key")
 	assert.NotContains(t, logs, "sk-scenario-token", "日志不得泄露用户 Token")
 	assert.NotContains(t, logs, "Bearer test-key", "日志不得泄露 Bearer Token")
+}
+
+// 客户端持久幂等：首次请求创建任务；同用户/Token/key + 相同请求体的后续请求
+// 返回原公开任务，不再次访问上游或扣费；相同 key + 不同请求体明确返回 409。
+func TestRelayTaskClientIdempotencyPersistentReplay(t *testing.T) {
+	setupScenarioGlobals(t, 0, 0)
+	setupScenarioDB(t)
+
+	up := newMockUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"cgt-idempotent-0001"}`)
+	})
+	seedScenarioData(t, up.server.URL, scenarioUserQuota)
+
+	const clientKey = "client-persistent-key-0001"
+	firstW := httptest.NewRecorder()
+	firstC := newScenarioCtx(t, firstW, up.server.URL, scenarioRequestBody)
+	firstC.Request.Header.Set("Idempotency-Key", clientKey)
+	RelayTask(firstC)
+	require.Equal(t, http.StatusOK, firstW.Code)
+
+	var firstBody map[string]any
+	require.NoError(t, common.Unmarshal(firstW.Body.Bytes(), &firstBody))
+	firstTaskID, _ := firstBody["task_id"].(string)
+	require.NotEmpty(t, firstTaskID)
+	quotaAfterFirst, err := model.GetUserQuota(scenarioUserID, false)
+	require.NoError(t, err)
+
+	secondW := httptest.NewRecorder()
+	secondC := newScenarioCtx(t, secondW, up.server.URL, scenarioRequestBody)
+	secondC.Request.Header.Set("Idempotency-Key", clientKey)
+	RelayTask(secondC)
+	require.Equal(t, http.StatusOK, secondW.Code)
+	assert.Equal(t, "true", secondW.Header().Get("Idempotency-Replayed"))
+
+	var secondBody map[string]any
+	require.NoError(t, common.Unmarshal(secondW.Body.Bytes(), &secondBody))
+	assert.Equal(t, firstTaskID, secondBody["task_id"], "同键重放必须返回原公开任务")
+
+	postCount, _, _, _ := up.snapshot(t)
+	assert.Equal(t, 1, postCount, "同键重放不得再次 POST 上游")
+	var taskCount int64
+	require.NoError(t, model.DB.Model(&model.Task{}).Count(&taskCount).Error)
+	assert.EqualValues(t, 1, taskCount, "同键重放不得创建第二条任务")
+	quotaAfterReplay, err := model.GetUserQuota(scenarioUserID, false)
+	require.NoError(t, err)
+	assert.Equal(t, quotaAfterFirst, quotaAfterReplay, "同键重放不得再次扣费")
+
+	conflictW := httptest.NewRecorder()
+	conflictC := newScenarioCtx(t, conflictW, up.server.URL,
+		`{"model":"doubao-seedance-2-0-260128","prompt":"不同请求体"}`)
+	conflictC.Request.Header.Set("Idempotency-Key", clientKey)
+	RelayTask(conflictC)
+	require.Equal(t, http.StatusConflict, conflictW.Code)
+	assert.Contains(t, conflictW.Body.String(), `"code":"idempotency_key_conflict"`)
+	postCount, _, _, _ = up.snapshot(t)
+	assert.Equal(t, 1, postCount, "同键不同请求体冲突不得访问上游")
 }
 
 // 日志断言：失败路径同样包含状态、重试次数与请求串联信息，且不泄露敏感内容。

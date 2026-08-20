@@ -561,6 +561,98 @@ func RelayTask(c *gin.Context) {
 		return
 	}
 
+	// ── 客户端持久幂等 ──
+	// 客户端显式提供 Idempotency-Key 时，在访问上游、预扣和预留并发名额之前
+	// 原子创建持久占位。相同用户/Token/key 的后续请求只能复用已有任务，绝不
+	// 再次 POST；相同 key 携带不同请求体则明确冲突。
+	clientIdempotencyKey, clientKeyErr := normalizeTaskClientIdempotencyKey(c.GetHeader("Idempotency-Key"))
+	if clientKeyErr != nil {
+		c.JSON(http.StatusBadRequest, &taskdto.TaskError{
+			Code:       "invalid_idempotency_key",
+			Message:    clientKeyErr.Error(),
+			StatusCode: http.StatusBadRequest,
+		})
+		return
+	}
+	var clientIdempotency *model.TaskClientIdempotency
+	if clientIdempotencyKey != "" {
+		fingerprint := service.SubmitFingerprint(c)
+		if fingerprint == "" {
+			c.JSON(http.StatusServiceUnavailable, &taskdto.TaskError{
+				Code:       "idempotency_unavailable",
+				Message:    "无法建立提交幂等记录，已停止本次提交以避免重复创建",
+				StatusCode: http.StatusServiceUnavailable,
+			})
+			return
+		}
+		if relayInfo.TaskRelayInfo.PublicTaskID == "" {
+			relayInfo.TaskRelayInfo.PublicTaskID = model.GenerateTaskID()
+		}
+		record, claimed, claimErr := model.ClaimTaskClientIdempotency(
+			relayInfo.UserId,
+			relayInfo.TokenId,
+			clientIdempotencyKey,
+			fingerprint,
+			relayInfo.TaskRelayInfo.PublicTaskID,
+		)
+		if claimErr != nil {
+			common.SysError("claim task client idempotency error: " + claimErr.Error())
+			c.JSON(http.StatusServiceUnavailable, &taskdto.TaskError{
+				Code:       "idempotency_unavailable",
+				Message:    "提交幂等记录暂不可用，已停止本次提交以避免重复创建",
+				StatusCode: http.StatusServiceUnavailable,
+			})
+			return
+		}
+		if !claimed {
+			if record.RequestFingerprint != fingerprint {
+				respondTaskIdempotencyConflict(c)
+				return
+			}
+			existingTask, exists, getErr := model.GetByTaskId(relayInfo.UserId, record.PublicTaskID)
+			if getErr != nil {
+				common.SysError("get idempotent task error: " + getErr.Error())
+				c.JSON(http.StatusServiceUnavailable, &taskdto.TaskError{
+					Code:       "idempotency_unavailable",
+					Message:    "查询原任务失败，已停止重复提交",
+					StatusCode: http.StatusServiceUnavailable,
+				})
+				return
+			}
+			if exists {
+				respondIdempotentTaskReplay(c, existingTask)
+				return
+			}
+			respondTaskIdempotencyPending(c, record.State)
+			return
+		}
+		clientIdempotency = record
+		defer func() {
+			if clientIdempotency == nil {
+				return
+			}
+			switch {
+			case concurrencySlotTransferred:
+				if e := model.UpdateTaskClientIdempotencyState(clientIdempotency.ScopeHash, clientIdempotency.PublicTaskID, model.TaskClientIdempotencyCommitted); e != nil {
+					common.SysError("commit task client idempotency error: " + e.Error())
+				}
+			case recoverySlotTransferred ||
+				(result != nil && result.UpstreamTaskID != "") ||
+				(relayInfo.TaskRelayInfo != nil && relayInfo.TaskRelayInfo.SubmitOutcome == relaycommon.TaskSubmitOutcomeOutcomeUnknown):
+				// 上游任务确定存在或结果未知：即使本地任务/恢复记录落库失败也必须
+				// 永久阻止自动重放，等待查询或人工恢复。
+				if e := model.UpdateTaskClientIdempotencyState(clientIdempotency.ScopeHash, clientIdempotency.PublicTaskID, model.TaskClientIdempotencyUnknown); e != nil {
+					common.SysError("mark task client idempotency unknown error: " + e.Error())
+				}
+			default:
+				// 本地失败或上游明确拒绝，服务端确定未创建任务，可释放该 key 供修正后重试。
+				if e := model.DeleteTaskClientIdempotencyClaim(clientIdempotency.ScopeHash, clientIdempotency.PublicTaskID); e != nil {
+					common.SysError("release task client idempotency error: " + e.Error())
+				}
+			}
+		}()
+	}
+
 	// ── 幂等性准备（必须在进入重试循环之前完成）──
 	// 1. 生成"本次逻辑任务"的本地幂等键 + X-Client-Request-Id：
 	//    同一次任务的自动重试全程复用，绝不重新生成；全新任务（新 HTTP 请求 →
@@ -834,6 +926,73 @@ func respondDuplicateSubmission(c *gin.Context) {
 		Message:    "检测到相同的提交正在处理中，请勿重复提交",
 		StatusCode: http.StatusConflict,
 	})
+}
+
+func normalizeTaskClientIdempotencyKey(raw string) (string, error) {
+	key := strings.TrimSpace(raw)
+	if key == "" {
+		return "", nil
+	}
+	if len(key) > 128 {
+		return "", errors.New("Idempotency-Key 长度不能超过 128 个字符")
+	}
+	for _, r := range key {
+		if r < 0x21 || r > 0x7e {
+			return "", errors.New("Idempotency-Key 只能包含可见 ASCII 字符")
+		}
+	}
+	return key, nil
+}
+
+func respondTaskIdempotencyConflict(c *gin.Context) {
+	c.JSON(http.StatusConflict, &taskdto.TaskError{
+		Code:       "idempotency_key_conflict",
+		Message:    "同一个 Idempotency-Key 已用于不同的请求参数，请更换幂等键",
+		StatusCode: http.StatusConflict,
+	})
+}
+
+func respondTaskIdempotencyPending(c *gin.Context, state string) {
+	code := "idempotency_request_in_progress"
+	message := "该 Idempotency-Key 对应的任务正在创建中，请查询原任务，不要重复提交"
+	if state == model.TaskClientIdempotencyUnknown {
+		code = "idempotency_outcome_unknown"
+		message = "该 Idempotency-Key 的创建结果正在确认中，已停止重复提交以避免产生第二个任务"
+	}
+	c.JSON(http.StatusConflict, &taskdto.TaskError{
+		Code:       code,
+		Message:    message,
+		StatusCode: http.StatusConflict,
+	})
+}
+
+// respondIdempotentTaskReplay 返回客户端首次提交创建的公开任务，不触发渠道选择、
+// 预扣、并发名额或上游调用。响应只使用本地公开字段，绝不返回上游任务 ID/URL。
+func respondIdempotentTaskReplay(c *gin.Context, task *model.Task) {
+	video := dto.NewOpenAIVideo()
+	video.ID = task.TaskID
+	video.TaskID = task.TaskID
+	video.Model = task.Properties.OriginModelName
+	video.Status = task.Status.ToVideoStatus()
+	video.SetProgressStr(task.Progress)
+	video.CreatedAt = task.CreatedAt
+	if video.CreatedAt == 0 {
+		video.CreatedAt = task.SubmitTime
+	}
+	if task.Status == model.TaskStatusSuccess || task.Status == model.TaskStatusFailure {
+		video.CompletedAt = task.UpdatedAt
+		if video.CompletedAt == 0 {
+			video.CompletedAt = task.FinishTime
+		}
+	}
+	if task.Status == model.TaskStatusFailure {
+		video.Error = &dto.OpenAIVideoError{
+			Code:    "task_failed",
+			Message: common.MaskSensitiveInfo(task.FailReason),
+		}
+	}
+	c.Header("Idempotency-Replayed", "true")
+	c.JSON(http.StatusOK, video)
 }
 
 // backfillRecoveryParent 把人工重试（recreate）的新尝试结果回填到父恢复记录，

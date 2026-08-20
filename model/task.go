@@ -17,7 +17,7 @@ type TaskStatus string
 func (t TaskStatus) ToVideoStatus() string {
 	var status string
 	switch t {
-	case TaskStatusQueued, TaskStatusSubmitted:
+	case TaskStatusNotStart, TaskStatusQueued, TaskStatusSubmitted:
 		status = dto.VideoStatusQueued
 	case TaskStatusInProgress:
 		status = dto.VideoStatusInProgress
@@ -69,13 +69,13 @@ type Task struct {
 	// 对外暴露（管理端任务查询可见）：pending>0 且 TokenId<=0 的异常记录
 	// 由管理员人工处理（见 CompensatePendingTokenDeltas 问题四注释），
 	// 不得静默清零。
-	TokenDeltaPending int    `json:"token_delta_pending" gorm:"column:token_delta_pending;default:0;index"`
-	SubmitTime        int64  `json:"submit_time" gorm:"index"`
-	StartTime           int64      `json:"start_time" gorm:"index"`
-	FinishTime          int64      `json:"finish_time" gorm:"index"`
-	Progress            string     `json:"progress" gorm:"type:varchar(20);index"`
-	Properties          Properties `json:"properties" gorm:"type:json"`
-	Username            string     `json:"username,omitempty" gorm:"-"`
+	TokenDeltaPending int        `json:"token_delta_pending" gorm:"column:token_delta_pending;default:0;index"`
+	SubmitTime        int64      `json:"submit_time" gorm:"index"`
+	StartTime         int64      `json:"start_time" gorm:"index"`
+	FinishTime        int64      `json:"finish_time" gorm:"index"`
+	Progress          string     `json:"progress" gorm:"type:varchar(20);index"`
+	Properties        Properties `json:"properties" gorm:"type:json"`
+	Username          string     `json:"username,omitempty" gorm:"-"`
 	// 禁止返回给用户，内部可能包含key等隐私信息
 	PrivateData TaskPrivateData `json:"-" gorm:"column:private_data;type:json"`
 	Data        json.RawMessage `json:"data" gorm:"type:json"`
