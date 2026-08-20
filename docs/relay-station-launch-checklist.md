@@ -195,7 +195,7 @@
 - [x] 密钥通过权限为 `0600` 的生产 `.env` 注入，未写入 Compose 文件 `P0`
 - [x] 设置 `GIN_MODE=release`，关闭 `DEBUG` 和 `ENABLE_PPROF` `P0`
 - [x] 保持 `TLS_INSECURE_SKIP_VERIFY=false` `P0`
-- [ ] 确认生产数据库未确认支付合规条款，Stripe、Creem、Waffo、Waffo Pancake、易支付的凭据均为空（8-20 查库：options 表无任何支付网关凭据，`WaffoEnabled=false`），并验证 `/api/user/topup/info` 返回所有在线支付开关为 `false`（接口需认证，匿名未验证）`P0`
+- [x] 支付合规条款已确认（`payment_setting.compliance_confirmed=true`，admin 操作，terms v1）；Stripe、Creem、Waffo、Waffo Pancake、易支付凭据全部为空，`WaffoEnabled`/`PayAddress`/`TopUpLink` 未配置（options 无对应 key，支付无法发起）；`/api/user/topup/info` 接口验证待正式开放前补（需认证）`P0`
 - [x] 设置 `TZ=UTC` 和明确的 `NODE_NAME=new-api-prod-1` `P1`
 - [ ] 配置合理的请求、任务轮询和上游连接超时 `P1`
 
@@ -384,5 +384,5 @@ NODE_NAME=new-api-prod-1
 - [ ] 发布和回滚流程经过演练
 - [ ] ⚠️ 页面署名已按运营决策移除（footer/About attribution，2026-08-19/20 两次提交）；镜像内保留 LICENSE/NOTICE/THIRD-PARTY-LICENSES。AGPL 对外分发存在合规风险，建议保留仓库级署名
 - [ ] 已确认火山方舟账号允许当前调用方式
-- [x] 在线支付保持关闭（8-20 查库：options 无 stripe/creem/waffo 凭据，`WaffoEnabled=false`）；`/api/user/topup/info` 需认证，匿名未验证
+- [x] 在线支付保持关闭（8-20 查库：options 无 stripe/creem/waffo 凭据，`WaffoEnabled=false`；合规条款已确认 `payment_setting.compliance_confirmed=true`）；`/api/user/topup/info` 需认证，接口验证待正式开放前
 - [ ] 如启用支付网关，充值下单上限校验与超限提示已经上线并验证
