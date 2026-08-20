@@ -134,7 +134,9 @@ func (a *TaskAdaptor) ValidateRequestAndSetAction(c *gin.Context, info *relaycom
 		return nil
 	}
 
-	// 时长支持矩阵校验（三态）
+	// 时长支持矩阵校验（三态）。视频编辑模式是方舟协议中的特例：
+	// metadata.duration=-1 表示输出时长跟随输入视频，并要求 ratio=adaptive。
+	hasVideo := hasVideoInMetadata(req.Metadata)
 	duration, outcome := ResolveSeedanceDurationEx(&req)
 	switch outcome {
 	case DurationParseUnparsable:
@@ -142,6 +144,14 @@ func (a *TaskAdaptor) ValidateRequestAndSetAction(c *gin.Context, info *relaycom
 			fmt.Errorf("seedance duration must be a positive integer within the supported range"),
 			"invalid_seedance_duration", http.StatusBadRequest)
 	case DurationParseOK:
+		if duration == -1 {
+			if !hasVideo || !strings.EqualFold(metadataStringValue(req.Metadata, "ratio"), "adaptive") {
+				return service.TaskErrorWrapperLocal(
+					errors.New("seedance video editing duration -1 requires video input and ratio adaptive"),
+					"invalid_seedance_duration", http.StatusBadRequest)
+			}
+			break
+		}
 		if !SeedanceSupportedDurationsForModel(info.OriginModelName)[duration] {
 			return service.TaskErrorWrapperLocal(
 				fmt.Errorf("seedance duration must be one of %v seconds (got %d)",
@@ -154,7 +164,6 @@ func (a *TaskAdaptor) ValidateRequestAndSetAction(c *gin.Context, info *relaycom
 	// 完整 (分辨率档, hasVideo) 组合校验，与结算倍率取用同一组合）
 	modelVersion := ResolveSeedancePriceModel(info.OriginModelName, info.GetUpstreamModelName())
 	resolution := ResolveSeedanceRequestResolution(&req)
-	hasVideo := hasVideoInMetadata(req.Metadata)
 	if msg := ValidateSeedanceResolutionForModel(modelVersion, resolution, hasVideo); msg != "" {
 		return service.TaskErrorWrapperLocal(errors.New(msg), "invalid_seedance_resolution", http.StatusBadRequest)
 	}

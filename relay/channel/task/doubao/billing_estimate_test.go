@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	taskdto "github.com/QuantumNous/new-api/dto"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 
 	"github.com/gin-gonic/gin"
@@ -341,6 +342,10 @@ func TestResolveSeedanceDurationEx_TriState(t *testing.T) {
 	assert.Equal(t, 5, d)
 	assert.Equal(t, DurationParseOK, o)
 
+	d, o = ResolveSeedanceDurationEx(&relaycommon.TaskSubmitReq{Metadata: map[string]interface{}{"duration": -1.0}})
+	assert.Equal(t, -1, d)
+	assert.Equal(t, DurationParseOK, o, "视频编辑的 metadata.duration=-1 哨兵值必须保留给校验层")
+
 	d, o = ResolveSeedanceDurationEx(&relaycommon.TaskSubmitReq{Metadata: map[string]interface{}{"SECONDS": "10"}})
 	assert.Equal(t, 10, d)
 	assert.Equal(t, DurationParseOK, o, "metadata key 大小写必须真正归一化")
@@ -452,6 +457,35 @@ func TestValidateRequestAndSetAction_UnparsableDurationRejected(t *testing.T) {
 		taskErr := a.ValidateRequestAndSetAction(c, &relaycommon.RelayInfo{TaskRelayInfo: &relaycommon.TaskRelayInfo{}})
 		require.NotNil(t, taskErr, "无法解析时长必须 400: %s", body)
 		assert.Equal(t, "invalid_seedance_duration", taskErr.Code)
+	}
+}
+
+func TestValidateRequestAndSetAction_VideoEditingDurationSentinel(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	a := &TaskAdaptor{}
+	info := &relaycommon.RelayInfo{TaskRelayInfo: &relaycommon.TaskRelayInfo{}, OriginModelName: "doubao-seedance-2.5"}
+
+	validate := func(body string) *taskdto.TaskError {
+		c := &gin.Context{Keys: make(map[string]any)}
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/video/generations", strings.NewReader(body))
+		c.Request.Header.Set("Content-Type", "application/json")
+		return a.ValidateRequestAndSetAction(c, info)
+	}
+
+	video := `{"type":"video_url","role":"reference_video","video_url":{"url":"https://example.com/input.mp4"}}`
+	require.Nil(t, validate(`{"model":"doubao-seedance-2.5","prompt":"edit","metadata":{"duration":-1,"ratio":"adaptive","content":[`+video+`]}}`))
+
+	for _, tc := range []struct {
+		body string
+		code string
+	}{
+		{`{"model":"doubao-seedance-2.5","prompt":"edit","duration":-1,"metadata":{"ratio":"adaptive","content":[` + video + `]}}`, "invalid_seconds"},
+		{`{"model":"doubao-seedance-2.5","prompt":"edit","metadata":{"duration":-1,"ratio":"adaptive"}}`, "invalid_seedance_duration"},
+		{`{"model":"doubao-seedance-2.5","prompt":"edit","metadata":{"duration":-1,"ratio":"16:9","content":[` + video + `]}}`, "invalid_seedance_duration"},
+	} {
+		taskErr := validate(tc.body)
+		require.NotNil(t, taskErr)
+		assert.Equal(t, tc.code, taskErr.Code)
 	}
 }
 

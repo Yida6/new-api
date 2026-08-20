@@ -116,6 +116,7 @@ func seedanceOfficialTokens(duration int, tier string) int64 {
 // 依据火山方舟官方文档（2026-08-07 Seedance 2.5 API 公测）：
 //   - Seedance 2.5：原生 4–30 秒单次直出（30s 直出是 2.5 核心能力）；
 //   - Seedance 2.0 系列：4–15 秒。
+//
 // 不在允许集合内的时长在发送上游前直接 400（绝不"以低价预扣后继续提交"）。
 var SeedanceSupportedDurationValues = []int{5, 10}
 
@@ -358,6 +359,12 @@ func ResolveSeedanceDurationEx(req *relaycommon.TaskSubmitReq) (int, DurationPar
 	if v, ok := metadataIntValue(req.Metadata, "duration"); ok {
 		return v, DurationParseOK
 	}
+	// 方舟视频编辑模式使用 metadata.duration=-1 表示输出时长跟随输入视频。
+	// 这里只负责保留该哨兵值；是否确有 video_url 输入以及 ratio=adaptive
+	// 由请求校验层结合完整请求判断。顶层 duration=-1 仍按非法值处理。
+	if metadataIntEquals(req.Metadata, "duration", -1) {
+		return -1, DurationParseOK
+	}
 	if v, ok := metadataIntValue(req.Metadata, "seconds"); ok {
 		return v, DurationParseOK
 	}
@@ -366,6 +373,40 @@ func ResolveSeedanceDurationEx(req *relaycommon.TaskSubmitReq) (int, DurationPar
 		return 0, DurationParseUnparsable
 	}
 	return 0, DurationParseMissing
+}
+
+// metadataIntEquals 判断 metadata 中的值是否能无损解析为指定整数。
+// 仅用于识别上游协议定义的整数哨兵值，不放宽普通正时长解析规则。
+func metadataIntEquals(metadata map[string]interface{}, key string, want int64) bool {
+	if metadata == nil {
+		return false
+	}
+	var raw interface{}
+	found := false
+	for k, v := range metadata {
+		if strings.EqualFold(k, key) {
+			raw, found = v, true
+			break
+		}
+	}
+	if !found {
+		return false
+	}
+	switch v := raw.(type) {
+	case float64:
+		return v == math.Trunc(v) && v == float64(want)
+	case float32:
+		return float64(v) == math.Trunc(float64(v)) && int64(v) == want
+	case int:
+		return int64(v) == want
+	case int64:
+		return v == want
+	case string:
+		n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+		return err == nil && n == want
+	default:
+		return false
+	}
 }
 
 // ResolveSeedanceDuration 兼容旧调用：返回 (秒数, 是否缺失/无法解析)。
@@ -549,7 +590,7 @@ func EstimateSeedancePricing(params SeedanceBillingParams) SeedancePricingEstima
 			// 未知），保守按"输入时长 = 输出时长"翻倍估算 token，避免 i2v 预扣低估。
 			tokens *= 2
 		}
-		durationSafety = float64(tokens)/float64(SeedancePreConsumeBaseTokens)*SeedancePreConsumeSafetyFactor
+		durationSafety = float64(tokens) / float64(SeedancePreConsumeBaseTokens) * SeedancePreConsumeSafetyFactor
 		if !isFinitePositive(durationSafety) {
 			durationSafety = 1.0
 		}
