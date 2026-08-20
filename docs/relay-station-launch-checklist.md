@@ -243,8 +243,8 @@ NODE_NAME=new-api-prod-1
 - [x] `【已有】` 项目支持 Seedance 任务、扣费、差额结算和退款日志
 - [x] `【已有】` 项目支持用户、模型、渠道、Token、额度和错误信息查询
 - [x] `【配置】` 应用容器统一使用 `json-file` 日志轮转，单文件 20 MB、保留 5 个文件 `P0`
-- [ ] `【验证】` 确认生产日志不会记录完整用户 Token 和上游密钥 `P0`（代码与自动化测试已确认脱敏 Endpoint ID/API Key；生产日志抽检仍待执行）
-  - 代码与自动化测试已确认数据库落盘、文件/控制台、系统日志及日志 API 会脱敏 Endpoint ID/API Key；部署后仍需使用生产配置完成日志抽检，并单独确认完整用户 Token 不会落盘。
+- [x] `【验证】` 确认生产日志不会记录完整用户 Token 和上游密钥 `P0`（8-20 生产日志抽检通过：应用日志 27 个文件与 DB logs 表对渠道 key `sk-YVBkmwm...`、用户 token `AvAy5DhVFr...`、Authorization 头均为 0 命中；logs 表无 request/response body 列；真实请求 200+403 复查新日志同样零命中）
+  - 8-20 已执行生产日志抽检：以线上真实渠道 key 与用户 token 特征串在 `/app/logs/oneapi-*.log`（27 个文件）与 DB `logs` 表（content/other 列）grep 均为 0 命中；logs 表无 request/response body 列；触发真实 `GET /v1/models`(200) 与 `POST /v1/video/generations`(403 预扣失败零成本) 后复查新日志零命中；GIN 日志仅含 request_id/method/path/status/ip，不含 Authorization 头。结论：完整用户 Token 与上游密钥不会落盘。
 - [x] `【外部】` 监控健康接口 `/api/status`（Uptime Kuma 已启用）`P0`
 - [ ] `【外部】` 监控 CPU、内存、磁盘、容器重启和网络 `P0`
 - [ ] `【外部】` 对 5xx 激增、渠道失败、上游余额不足和异常成本发送告警 `P0`
