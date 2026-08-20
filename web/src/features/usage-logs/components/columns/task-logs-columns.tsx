@@ -19,11 +19,13 @@ For commercial licensing, please contact support@quantumnous.com
 import type { ColumnDef } from '@tanstack/react-table'
 import { Music } from 'lucide-react'
 /* eslint-disable react-refresh/only-export-components */
-import { useState, useMemo } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { Dialog } from '@/components/dialog'
 import { StatusBadge } from '@/components/status-badge'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
+import { api } from '@/lib/api'
 import { getUserAvatarFallback, getUserAvatarStyle } from '@/lib/avatar'
 import { formatTimestampToDate } from '@/lib/format'
 import { cn } from '@/lib/utils'
@@ -86,6 +88,81 @@ function AudioPreviewCell({ log }: { log: TaskLog }) {
         onOpenChange={setOpen}
         clips={clips as AudioClip[]}
       />
+    </>
+  )
+}
+
+function VideoPreviewCell({ log }: { log: TaskLog }) {
+  const { t } = useTranslation()
+  const [open, setOpen] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [failed, setFailed] = useState(false)
+  const [blobUrl, setBlobUrl] = useState<string>()
+
+  useEffect(() => {
+    if (!open) return
+
+    let cancelled = false
+    let objectUrl: string | undefined
+    setLoading(true)
+    setFailed(false)
+    setBlobUrl(undefined)
+
+    ;(async () => {
+      try {
+        const response = await api.get(
+          `/v1/videos/${encodeURIComponent(log.task_id)}/content`,
+          { responseType: 'blob', skipErrorHandler: true }
+        )
+        if (cancelled) return
+        objectUrl = URL.createObjectURL(response.data as Blob)
+        setBlobUrl(objectUrl)
+      } catch {
+        if (!cancelled) setFailed(true)
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    })()
+
+    return () => {
+      cancelled = true
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+    }
+  }, [open, log.task_id])
+
+  let previewContent = (
+    <video src={blobUrl} controls className='max-h-[70vh] w-full rounded-md' />
+  )
+  if (loading) {
+    previewContent = (
+      <span className='text-muted-foreground text-sm'>{t('Loading...')}</span>
+    )
+  } else if (failed || !blobUrl) {
+    previewContent = (
+      <span className='text-destructive text-sm'>{t('Failed to load')}</span>
+    )
+  }
+
+  return (
+    <>
+      <button
+        type='button'
+        className='text-foreground text-xs hover:underline'
+        onClick={() => setOpen(true)}
+      >
+        {t('Click to preview video')}
+      </button>
+      <Dialog
+        open={open}
+        onOpenChange={setOpen}
+        title={t('Click to preview video')}
+        description={`${t('Task ID:')} ${log.task_id}`}
+        contentClassName='sm:max-w-4xl'
+      >
+        <div className='bg-muted/30 flex min-h-56 items-center justify-center rounded-lg border p-2'>
+          {previewContent}
+        </div>
+      </Dialog>
     </>
   )
 }
@@ -248,17 +325,7 @@ export function useTaskLogsColumns(isAdmin: boolean): ColumnDef<TaskLog>[] {
         const hasResult = Boolean(log.result_url?.trim())
 
         if (isSuccess && isVideoTask && hasResult) {
-          const videoUrl = `/v1/videos/${log.task_id}/content`
-          return (
-            <a
-              href={videoUrl}
-              target='_blank'
-              rel='noopener noreferrer'
-              className='text-foreground text-xs hover:underline'
-            >
-              {t('Click to preview video')}
-            </a>
-          )
+          return <VideoPreviewCell log={log} />
         }
 
         if (!failReason) {
