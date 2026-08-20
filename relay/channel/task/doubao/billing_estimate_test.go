@@ -604,3 +604,50 @@ func TestValidateRequestAndSetAction_MappedModelUsesSamePriceTable(t *testing.T)
 	assert.True(t, est.PricedModel, "映射后的估算必须命中价格表")
 	assert.Equal(t, "doubao-seedance-2-0-fast-260128", ResolveSeedancePriceModel(info.OriginModelName, info.UpstreamModelName))
 }
+
+func TestResolveSeedanceRequestResolution_MergesMetadataAndTopLevel(t *testing.T) {
+	cases := []struct {
+		name string
+		req  relaycommon.TaskSubmitReq
+		want string
+	}{
+		{"metadata wins over top-level", relaycommon.TaskSubmitReq{Resolution: "720p", Metadata: map[string]interface{}{"resolution": "4k"}}, "4k"},
+		{"top-level fallback when metadata absent", relaycommon.TaskSubmitReq{Resolution: "4k"}, "4k"},
+		{"top-level fallback when metadata empty", relaycommon.TaskSubmitReq{Resolution: "480p", Metadata: map[string]interface{}{"resolution": ""}}, "480p"},
+		{"both empty", relaycommon.TaskSubmitReq{}, ""},
+		{"top-level whitespace trimmed", relaycommon.TaskSubmitReq{Resolution: " 1080p "}, "1080p"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, ResolveSeedanceRequestResolution(&tc.req))
+		})
+	}
+}
+
+// 回归：2026-08-20 线上实测暴露——顶层 resolution 曾因 TaskSubmitReq 无该字段
+// 被 json 丢弃，校验层读到空 → 2.5+4k 静默放行 → 上游降档 720p 并收费。
+// 修复后顶层 resolution 必须参与校验：2.5+4k（无价格档）→ 校验层 400。
+func TestValidateSeedanceResolutionForModel_TopLevel4kBlockedFor25(t *testing.T) {
+	info := &relaycommon.RelayInfo{
+		TaskRelayInfo:   &relaycommon.TaskRelayInfo{},
+		OriginModelName: "doubao-seedance-2.5",
+	}
+	body := `{"model":"doubao-seedance-2.5","prompt":"hello","seconds":"5","resolution":"4k"}`
+	c := &gin.Context{Keys: make(map[string]any)}
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/video/generations", strings.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	a := &TaskAdaptor{apiKey: "test", baseURL: "https://ark.cn-beijing.volces.com"}
+	taskErr := a.ValidateRequestAndSetAction(c, info)
+	require.NotNil(t, taskErr, "2.5 + 顶层 4k 必须被校验层拦截（上游不支持 4k，会静默降档收费）")
+	assert.Equal(t, http.StatusBadRequest, taskErr.StatusCode)
+	assert.Equal(t, "invalid_seedance_resolution", taskErr.Code)
+
+	// 控制组：顶层 1080p 应放行（2-5 价格表有 1080p 档）
+	bodyOK := `{"model":"doubao-seedance-2.5","prompt":"hello","seconds":"5","resolution":"1080p"}`
+	cOK := &gin.Context{Keys: make(map[string]any)}
+	cOK.Request = httptest.NewRequest(http.MethodPost, "/v1/video/generations", strings.NewReader(bodyOK))
+	cOK.Request.Header.Set("Content-Type", "application/json")
+	taskErrOK := a.ValidateRequestAndSetAction(cOK, info)
+	require.Nil(t, taskErrOK, "2.5 + 顶层 1080p 必须放行（价格表有档）")
+}

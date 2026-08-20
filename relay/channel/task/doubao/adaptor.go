@@ -153,7 +153,7 @@ func (a *TaskAdaptor) ValidateRequestAndSetAction(c *gin.Context, info *relaycom
 	// 分辨率支持矩阵校验（未知格式 400；有表模型显式档缺失 400；
 	// 完整 (分辨率档, hasVideo) 组合校验，与结算倍率取用同一组合）
 	modelVersion := ResolveSeedancePriceModel(info.OriginModelName, info.GetUpstreamModelName())
-	resolution := metadataStringValue(req.Metadata, "resolution")
+	resolution := ResolveSeedanceRequestResolution(&req)
 	hasVideo := hasVideoInMetadata(req.Metadata)
 	if msg := ValidateSeedanceResolutionForModel(modelVersion, resolution, hasVideo); msg != "" {
 		return service.TaskErrorWrapperLocal(errors.New(msg), "invalid_seedance_resolution", http.StatusBadRequest)
@@ -183,6 +183,17 @@ func (a *TaskAdaptor) BuildRequestHeader(_ *gin.Context, req *http.Request, info
 	return nil
 }
 
+// ResolveSeedanceRequestResolution 返回请求的生成分辨率：metadata.resolution
+// 优先（历史契约），顶层 resolution 兼容兜底（OpenAI 兼容客户端常把
+// resolution 放请求顶层，若只读 metadata 会静默放行顶层非法档位、由上游
+// 降档计费）。两者都为空时返回 ""，校验层按基准档处理。
+func ResolveSeedanceRequestResolution(req *relaycommon.TaskSubmitReq) string {
+	if v := metadataStringValue(req.Metadata, "resolution"); v != "" {
+		return v
+	}
+	return strings.TrimSpace(req.Resolution)
+}
+
 // EstimateBilling 根据请求 metadata 中的输出分辨率与是否包含视频输入，返回
 // Seedance 任务的**真实结算倍率** OtherRatio（"size" = 请求实际组合单价 /
 // 基准组合单价，允许 < 1，如 28/46、31/46、26/46、16/46），驱动预扣与真实
@@ -197,7 +208,7 @@ func (a *TaskAdaptor) EstimateBilling(c *gin.Context, info *relaycommon.RelayInf
 		return nil
 	}
 	hasVideo := hasVideoInMetadata(req.Metadata)
-	resolution := metadataStringValue(req.Metadata, "resolution")
+	resolution := ResolveSeedanceRequestResolution(&req)
 	duration, _ := ResolveSeedanceDurationEx(&req)
 	modelVersion := ResolveSeedancePriceModel(info.OriginModelName, info.GetUpstreamModelName())
 
@@ -221,7 +232,7 @@ func (a *TaskAdaptor) PreConsumeMultiplier(c *gin.Context, info *relaycommon.Rel
 		return 1.0
 	}
 	hasVideo := hasVideoInMetadata(req.Metadata)
-	resolution := metadataStringValue(req.Metadata, "resolution")
+	resolution := ResolveSeedanceRequestResolution(&req)
 	duration, _ := ResolveSeedanceDurationEx(&req)
 	modelVersion := ResolveSeedancePriceModel(info.OriginModelName, info.GetUpstreamModelName())
 	estimate := EstimateSeedancePricing(SeedanceBillingParams{
