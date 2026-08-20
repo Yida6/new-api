@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -28,6 +29,45 @@ func videoProxyError(c *gin.Context, status int, errType, message string) {
 			"type":    errType,
 		},
 	})
+}
+
+var videoSingleRangePattern = regexp.MustCompile(`^bytes=(?:[0-9]+-[0-9]*|-[0-9]+)$`)
+
+func IssueVideoPlaybackURL(c *gin.Context) {
+	taskID := strings.TrimSpace(c.Param("task_id"))
+	userID := c.GetInt("id")
+	task, exists, err := model.GetByTaskId(userID, taskID)
+	if err != nil {
+		videoProxyError(c, http.StatusInternalServerError, "server_error", "Failed to query task")
+		return
+	}
+	if !exists || task == nil {
+		videoProxyError(c, http.StatusNotFound, "invalid_request_error", "Task not found")
+		return
+	}
+	if task.Status != model.TaskStatusSuccess {
+		videoProxyError(c, http.StatusBadRequest, "invalid_request_error", "Task is not completed yet")
+		return
+	}
+	raw, expiresAt, err := service.IssueVideoPlaybackToken(userID, taskID)
+	if err != nil {
+		videoProxyError(c, http.StatusInternalServerError, "server_error", "Failed to create playback URL")
+		return
+	}
+	playbackURL := fmt.Sprintf("/v1/videos/%s/playback?token=%s", url.PathEscape(taskID), url.QueryEscape(raw))
+	c.JSON(http.StatusOK, gin.H{"url": playbackURL, "expires_at": expiresAt})
+}
+
+func VideoPlaybackProxy(c *gin.Context) {
+	taskID := strings.TrimSpace(c.Param("task_id"))
+	c.Header("X-Robots-Tag", "noindex, nofollow")
+	userID, err := service.ParseVideoPlaybackToken(c.Query("token"), taskID)
+	if err != nil {
+		videoProxyError(c, http.StatusUnauthorized, "authentication_error", "Invalid or expired playback token")
+		return
+	}
+	c.Set("id", userID)
+	VideoProxy(c)
 }
 
 func VideoProxy(c *gin.Context) {
@@ -159,6 +199,18 @@ func VideoProxy(c *gin.Context) {
 		return
 	}
 
+	rangeHeader := strings.TrimSpace(c.GetHeader("Range"))
+	if rangeHeader != "" {
+		if !videoSingleRangePattern.MatchString(rangeHeader) {
+			videoProxyError(c, http.StatusRequestedRangeNotSatisfiable, "invalid_request_error", "Only a single byte range is supported")
+			return
+		}
+		req.Header.Set("Range", rangeHeader)
+		if ifRange := strings.TrimSpace(c.GetHeader("If-Range")); ifRange != "" {
+			req.Header.Set("If-Range", ifRange)
+		}
+	}
+
 	resp, err := client.Do(req)
 	if err != nil {
 		logger.LogError(c.Request.Context(), fmt.Sprintf("Failed to fetch video from %s: %s", videoURL, err.Error()))
@@ -167,7 +219,7 @@ func VideoProxy(c *gin.Context) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent && resp.StatusCode != http.StatusRequestedRangeNotSatisfiable {
 		logger.LogError(c.Request.Context(), fmt.Sprintf("Upstream returned status %d for %s", resp.StatusCode, videoURL))
 		videoProxyError(c, http.StatusBadGateway, "server_error",
 			fmt.Sprintf("Upstream service returned status %d", resp.StatusCode))
@@ -191,6 +243,9 @@ func VideoProxy(c *gin.Context) {
 	// 校验。因此禁止一切缓存（no-store），保证每次访问都执行鉴权与校验。
 	c.Writer.Header().Set("Cache-Control", "private, no-store")
 	c.Writer.WriteHeader(resp.StatusCode)
+	if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
+		return
+	}
 	if _, err = io.Copy(c.Writer, resp.Body); err != nil {
 		logger.LogError(c.Request.Context(), fmt.Sprintf("Failed to stream video content: %s", err.Error()))
 	}

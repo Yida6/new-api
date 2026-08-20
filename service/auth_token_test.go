@@ -56,6 +56,29 @@ func TestAccessTokenRejectsTampering(t *testing.T) {
 	assert.ErrorIs(t, err, ErrAuthTokenInvalid)
 }
 
+func TestVideoPlaybackTokenBindsUserAndTask(t *testing.T) {
+	useTestSessionSecret(t)
+	raw, expiresAt, err := IssueVideoPlaybackToken(42, "task_video_1")
+	require.NoError(t, err)
+	assert.Greater(t, expiresAt, time.Now().Unix())
+
+	userID, err := ParseVideoPlaybackToken(raw, "task_video_1")
+	require.NoError(t, err)
+	assert.Equal(t, 42, userID)
+
+	_, err = ParseVideoPlaybackToken(raw, "task_video_2")
+	assert.ErrorIs(t, err, ErrPlaybackScope)
+
+	tamperAt := len(raw) - 2
+	replacement := "x"
+	if raw[tamperAt] == 'x' {
+		replacement = "y"
+	}
+	tampered := raw[:tamperAt] + replacement + raw[tamperAt+1:]
+	_, err = ParseVideoPlaybackToken(tampered, "task_video_1")
+	assert.ErrorIs(t, err, ErrAuthTokenInvalid)
+}
+
 func TestDashboardAccessTokenClassification(t *testing.T) {
 	useTestSessionSecret(t)
 

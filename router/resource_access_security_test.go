@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"testing"
 
@@ -268,6 +269,99 @@ func TestVideoContentProxyAuthzOwnershipAndHeaderSanitization(t *testing.T) {
 				"响应头 %s 泄露上游地址: %s", key, v)
 		}
 	}
+}
+
+func TestVideoPlaybackURLStreamsAuthenticatedSingleRange(t *testing.T) {
+	engine, _, videoTaskID := setupResourceSecurityTestEnv(t)
+	service.InitHttpClient()
+	allowLoopbackFetchForTest(t)
+
+	previousSecret := common.SessionSecret
+	common.SessionSecret = "video-playback-test-secret-with-sufficient-entropy"
+	t.Cleanup(func() { common.SessionSecret = previousSecret })
+
+	videoBytes := []byte("0123456789")
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		require.Equal(t, "bytes=2-5", req.Header.Get("Range"))
+		w.Header().Set("Content-Type", "video/mp4")
+		w.Header().Set("Accept-Ranges", "bytes")
+		w.Header().Set("Content-Range", "bytes 2-5/10")
+		w.Header().Set("Content-Length", "4")
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write(videoBytes[2:6])
+	}))
+	defer upstream.Close()
+
+	var task model.Task
+	require.NoError(t, model.DB.Where("task_id = ?", videoTaskID).First(&task).Error)
+	task.PrivateData.ResultURL = upstream.URL + "/video.mp4"
+	require.NoError(t, model.DB.Save(&task).Error)
+
+	issueRec := httptest.NewRecorder()
+	issueReq := httptest.NewRequest(http.MethodGet, "/v1/videos/"+videoTaskID+"/playback-url", nil)
+	issueReq.Header.Set("Authorization", "Bearer resownerkey")
+	engine.ServeHTTP(issueRec, issueReq)
+	require.Equal(t, http.StatusOK, issueRec.Code, issueRec.Body.String())
+	var issued struct {
+		URL string `json:"url"`
+	}
+	require.NoError(t, json.Unmarshal(issueRec.Body.Bytes(), &issued))
+	require.NotEmpty(t, issued.URL)
+
+	playRec := httptest.NewRecorder()
+	playReq := httptest.NewRequest(http.MethodGet, issued.URL, nil)
+	playReq.Header.Set("Range", "bytes=2-5")
+	engine.ServeHTTP(playRec, playReq)
+	require.Equal(t, http.StatusPartialContent, playRec.Code, playRec.Body.String())
+	assert.Equal(t, "2345", playRec.Body.String())
+	assert.Equal(t, "bytes 2-5/10", playRec.Header().Get("Content-Range"))
+	assert.Equal(t, "bytes", playRec.Header().Get("Accept-Ranges"))
+	assert.Contains(t, playRec.Header().Get("Cache-Control"), "no-store")
+
+	parsedURL, err := url.Parse(issued.URL)
+	require.NoError(t, err)
+	parsedURL.Path = "/v1/videos/task_other/playback"
+	wrongTaskRec := httptest.NewRecorder()
+	engine.ServeHTTP(wrongTaskRec, httptest.NewRequest(http.MethodGet, parsedURL.String(), nil))
+	assert.Equal(t, http.StatusUnauthorized, wrongTaskRec.Code)
+}
+
+func TestVideoPlaybackRejectsMultipleRangesBeforeUpstream(t *testing.T) {
+	engine, _, videoTaskID := setupResourceSecurityTestEnv(t)
+	service.InitHttpClient()
+	allowLoopbackFetchForTest(t)
+
+	previousSecret := common.SessionSecret
+	common.SessionSecret = "video-playback-range-test-secret"
+	t.Cleanup(func() { common.SessionSecret = previousSecret })
+
+	upstreamCalled := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalled = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	var task model.Task
+	require.NoError(t, model.DB.Where("task_id = ?", videoTaskID).First(&task).Error)
+	task.PrivateData.ResultURL = upstream.URL + "/video.mp4"
+	require.NoError(t, model.DB.Save(&task).Error)
+
+	issueRec := httptest.NewRecorder()
+	issueReq := httptest.NewRequest(http.MethodGet, "/v1/videos/"+videoTaskID+"/playback-url", nil)
+	issueReq.Header.Set("Authorization", "Bearer resownerkey")
+	engine.ServeHTTP(issueRec, issueReq)
+	require.Equal(t, http.StatusOK, issueRec.Code)
+	var issued struct {
+		URL string `json:"url"`
+	}
+	require.NoError(t, json.Unmarshal(issueRec.Body.Bytes(), &issued))
+
+	playRec := httptest.NewRecorder()
+	playReq := httptest.NewRequest(http.MethodGet, issued.URL, nil)
+	playReq.Header.Set("Range", "bytes=0-1,4-5")
+	engine.ServeHTTP(playRec, playReq)
+	assert.Equal(t, http.StatusRequestedRangeNotSatisfiable, playRec.Code)
+	assert.False(t, upstreamCalled)
 }
 
 // TestVideoContentProxyDataURLSuccessNotPublic 覆盖视频代理的 data URL 成功路径：

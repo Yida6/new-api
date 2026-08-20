@@ -17,10 +17,12 @@ import (
 const (
 	AccessTokenTTL        = 15 * time.Minute
 	SecurityProofTTL      = 5 * time.Minute
+	VideoPlaybackTokenTTL = 5 * time.Minute
 	LoginSessionTTL       = 30 * 24 * time.Hour
 	RefreshReplayWindow   = 30 * time.Second
 	accessTokenUse        = "access"
 	securityProofTokenUse = "security_proof"
+	videoPlaybackTokenUse = "video_playback"
 	authTokenIssuer       = "new-api"
 	authTokenAudience     = "new-api-dashboard"
 )
@@ -30,6 +32,7 @@ var (
 	ErrAuthTokenExpired = errors.New("authentication token has expired")
 	ErrProofScope       = errors.New("security proof scope mismatch")
 	ErrProofMethod      = errors.New("security proof method mismatch")
+	ErrPlaybackScope    = errors.New("video playback token scope mismatch")
 )
 
 // AuthIdentity is the server-validated identity attached to dashboard requests.
@@ -48,6 +51,7 @@ type authClaims struct {
 	SessionVersion  int64    `json:"sv"`
 	Method          string   `json:"method,omitempty"`
 	Scopes          []string `json:"scopes,omitempty"`
+	TaskID          string   `json:"task_id,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -97,6 +101,48 @@ func ParseAccessToken(raw string) (AuthIdentity, error) {
 		UserAuthVersion: claims.UserAuthVersion,
 		SessionVersion:  claims.SessionVersion,
 	}, nil
+}
+
+// IssueVideoPlaybackToken creates a short-lived bearer URL credential scoped
+// to exactly one user and one task. It exists so native <video> requests can
+// use HTTP Range without exposing the upstream media URL or a dashboard token.
+func IssueVideoPlaybackToken(userID int, taskID string) (string, int64, error) {
+	taskID = strings.TrimSpace(taskID)
+	if userID <= 0 || taskID == "" {
+		return "", 0, ErrAuthTokenInvalid
+	}
+	now := time.Now()
+	expiresAt := now.Add(VideoPlaybackTokenTTL)
+	claims := authClaims{
+		TokenUse: videoPlaybackTokenUse,
+		TaskID:   taskID,
+		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer:    authTokenIssuer,
+			Subject:   strconv.Itoa(userID),
+			Audience:  jwt.ClaimStrings{authTokenAudience},
+			ExpiresAt: jwt.NewNumericDate(expiresAt),
+			NotBefore: jwt.NewNumericDate(now.Add(-5 * time.Second)),
+			IssuedAt:  jwt.NewNumericDate(now),
+			ID:        uuid.NewString(),
+		},
+	}
+	signed, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(authSigningKey(videoPlaybackTokenUse))
+	return signed, expiresAt.Unix(), err
+}
+
+func ParseVideoPlaybackToken(raw, taskID string) (int, error) {
+	claims, err := parseAuthClaims(raw, videoPlaybackTokenUse, authSigningKey(videoPlaybackTokenUse))
+	if err != nil {
+		return 0, err
+	}
+	if !hmac.Equal([]byte(claims.TaskID), []byte(strings.TrimSpace(taskID))) {
+		return 0, ErrPlaybackScope
+	}
+	userID, err := strconv.Atoi(claims.Subject)
+	if err != nil || userID <= 0 {
+		return 0, ErrAuthTokenInvalid
+	}
+	return userID, nil
 }
 
 // ParseDashboardAccessToken distinguishes new-api dashboard JWTs from opaque

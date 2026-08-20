@@ -14,7 +14,15 @@ func SetVideoRouter(router *gin.Engine) {
 	videoProxyRouter.Use(middleware.TokenOrUserAuth())
 	{
 		videoProxyRouter.GET("/videos/:task_id/content", controller.VideoProxy)
+		videoProxyRouter.GET("/videos/:task_id/playback-url", controller.IssueVideoPlaybackURL)
 	}
+
+	// Native video elements cannot attach Authorization headers. Playback uses
+	// a short-lived, user/task-scoped signed URL issued by the authenticated
+	// route above; the handler still performs the normal ownership check.
+	videoPlaybackRouter := router.Group("/v1")
+	videoPlaybackRouter.Use(middleware.RouteTag("relay"))
+	videoPlaybackRouter.GET("/videos/:task_id/playback", controller.VideoPlaybackProxy)
 
 	videoV1Router := router.Group("/v1")
 	videoV1Router.Use(middleware.RouteTag("relay"))
