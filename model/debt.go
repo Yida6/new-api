@@ -44,9 +44,9 @@ type TaskBillingDebt struct {
 	UpstreamTaskId   string                `json:"upstream_task_id" gorm:"type:varchar(191)"`     // 上游任务 ID
 	ModelName        string                `json:"model_name" gorm:"type:varchar(191)"`
 	ChannelId        int                   `json:"channel_id" gorm:"index"`
-	PreConsumedQuota int                   `json:"pre_consumed_quota"` // 预扣额度
-	ActualQuota      int                   `json:"actual_quota"`       // 实际额度
-	DeltaQuota       int                   `json:"delta_quota"`        // 未付差额 = Actual - Pre（>0）
+	PreConsumedQuota int64                 `json:"pre_consumed_quota" gorm:"type:bigint;default:0"` // 预扣额度
+	ActualQuota      int64                 `json:"actual_quota" gorm:"type:bigint;default:0"`       // 实际额度
+	DeltaQuota       int64                 `json:"delta_quota" gorm:"type:bigint;default:0"`        // 未付差额 = Actual - Pre（>0）
 	Reason           string                `json:"reason" gorm:"type:varchar(255)"`
 	Status           TaskBillingDebtStatus `json:"status" gorm:"type:varchar(20);index"`
 	AlertSent        bool                  `json:"alert_sent" gorm:"default:false"` // 欠款告警是否已成功发送（失败保留可重试）
@@ -105,7 +105,7 @@ type TaskBillingDebtAudit struct {
 	AdminId    int    `json:"admin_id"` // 0 = 系统自动动作（如清偿后的自动解冻）
 	Action     string `json:"action" gorm:"type:varchar(30)"` // repay / void / unfreeze / auto_unfreeze
 	Reason     string `json:"reason" gorm:"type:varchar(255)"`
-	DeltaQuota int    `json:"delta_quota"` // 该债务的差额额度
+	DeltaQuota int64  `json:"delta_quota" gorm:"type:bigint;default:0"` // 该债务的差额额度
 	CreatedAt  int64  `json:"created_at"`
 }
 
@@ -204,9 +204,9 @@ type DebtInput struct {
 	UpstreamTaskId     string
 	ModelName          string
 	ChannelId          int
-	PreConsumedQuota   int
-	ActualQuota        int
-	DeltaQuota         int
+	PreConsumedQuota   int64
+	ActualQuota        int64
+	DeltaQuota         int64
 	Reason             string
 	BillingSource      string // "wallet" / "subscription"
 	SubscriptionId     int
@@ -771,7 +771,7 @@ func RepayTaskBillingDebt(userId int, debtId int64, opts RepayDebtOptions, admin
 }
 
 // walletCollectDebtTx 从钱包原子收款（quota >= delta 守卫，RowsAffected==1）。
-func walletCollectDebtTx(tx *gorm.DB, userId, delta int) error {
+func walletCollectDebtTx(tx *gorm.DB, userId int, delta int64) error {
 	res := tx.Model(&User{}).
 		Where("id = ? AND quota >= ?", userId, delta).
 		Update("quota", gorm.Expr("quota - ?", delta))

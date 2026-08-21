@@ -12,7 +12,7 @@ import (
 )
 
 // setupTokenQuotaBalanceTestUser 创建带指定钱包余额的用户，返回其信息。
-func setupTokenQuotaBalanceTestUser(t *testing.T, id int, quota int) *model.User {
+func setupTokenQuotaBalanceTestUser(t *testing.T, id int, quota int64) *model.User {
 	t.Helper()
 	db := setupTokenControllerTestDB(t)
 	require.NoError(t, db.AutoMigrate(&model.User{}))

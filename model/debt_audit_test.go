@@ -16,7 +16,7 @@ import (
 // 欠款核销、冻结解除与审计闭环（问题七）
 // ===========================================================================
 
-func seedDebtAuditUser(t *testing.T, id, quota int) {
+func seedDebtAuditUser(t *testing.T, id int, quota int64) {
 	t.Helper()
 	u := &User{Id: id, Username: fmt.Sprintf("debt_audit_%d", id), Quota: quota, Status: common.UserStatusEnabled, Role: common.RoleCommonUser, AffCode: fmt.Sprintf("aff-debt-audit-%d", id)}
 	require.NoError(t, DB.Create(u).Error)
@@ -62,7 +62,7 @@ func TestVoidTaskBillingDebt_AutoUnfreezesWhenNoOtherPending(t *testing.T) {
 	assert.Equal(t, "void", audits[0].Action)
 	assert.Equal(t, 9001, audits[0].AdminId, "审计必须记录管理员 ID")
 	assert.Equal(t, userID, audits[0].UserId, "审计必须记录用户 ID")
-	assert.Equal(t, 800, audits[0].DeltaQuota, "审计必须记录额度")
+	assert.Equal(t, int64(800), audits[0].DeltaQuota, "审计必须记录额度")
 	assert.NotZero(t, audits[0].CreatedAt, "审计必须记录时间")
 	assert.Contains(t, audits[0].Reason, "人工核销", "审计必须记录原因")
 	assert.Equal(t, "auto_unfreeze", audits[1].Action)
@@ -154,7 +154,7 @@ func TestUnfreezeUserDebtAudited_RecordsAuditOnMigration(t *testing.T) {
 	assert.Equal(t, "unfreeze", audits[0].Action)
 	assert.Equal(t, 9001, audits[0].AdminId)
 	assert.Equal(t, userID, audits[0].UserId)
-	assert.Equal(t, 500, audits[0].DeltaQuota)
+	assert.Equal(t, int64(500), audits[0].DeltaQuota)
 	assert.Contains(t, audits[0].Reason, "历史遗留解冻")
 }
 
@@ -178,7 +178,7 @@ func TestRepayTaskBillingDebt_RecordsAudit(t *testing.T) {
 	assert.Equal(t, "repay", audits[1].Action)
 	assert.Equal(t, 10086, audits[1].AdminId, "清偿审计必须记录管理员 ID")
 	assert.Equal(t, userID, audits[1].UserId)
-	assert.Equal(t, 500, audits[1].DeltaQuota)
+	assert.Equal(t, int64(500), audits[1].DeltaQuota)
 	assert.NotZero(t, audits[1].CreatedAt)
 	assert.Contains(t, audits[1].Reason, "欠款清偿")
 }
@@ -231,7 +231,7 @@ func TestDebtVoidRepay_ConcurrentSingleMigrationWins(t *testing.T) {
 		assert.Equal(t, 2000-500, getUserQuotaDB(t, userID), "清偿收款一次")
 		assert.False(t, mustUserDebtFrozen(t, userID), "清偿后自动解冻")
 	case DebtStatusVoided:
-		assert.Equal(t, 2000, getUserQuotaDB(t, userID), "核销不收款")
+		assert.Equal(t, int64(2000), getUserQuotaDB(t, userID), "核销不收款")
 		assert.False(t, mustUserDebtFrozen(t, userID), "核销后自动解冻")
 	default:
 		t.Fatalf("unexpected debt status: %s", reloaded.Status)

@@ -120,7 +120,7 @@ func RechargeEpay(tradeNo string, actualPaymentMethod string, callerIp string) (
 		refCol = `"trade_no"`
 	}
 
-	var quotaToAdd int
+	var quotaToAdd int64
 	topUp := &TopUp{}
 	err = DB.Transaction(func(tx *gorm.DB) error {
 		if err := lockForUpdate(tx).Where(refCol+" = ?", tradeNo).First(topUp).Error; err != nil {
@@ -181,7 +181,7 @@ func Recharge(referenceId string, customerId string, callerIp string) (err error
 		return errors.New("未提供支付单号")
 	}
 
-	var quota int
+	var quota int64
 	topUp := &TopUp{}
 
 	refCol := "`trade_no`"
@@ -400,7 +400,7 @@ func ManualCompleteTopUp(tradeNo string, callerIp string) error {
 	}
 
 	var userId int
-	var quotaToAdd int
+	var quotaToAdd int64
 	var payMoney float64
 	var paymentMethod string
 
@@ -469,7 +469,7 @@ func RechargeCreem(referenceId string, customerEmail string, customerName string
 		return errors.New("未提供支付单号")
 	}
 
-	var quota int
+	var quota int64
 	topUp := &TopUp{}
 
 	refCol := "`trade_no`"
@@ -543,7 +543,7 @@ func RechargeWaffo(tradeNo string, callerIp string) (err error) {
 		return errors.New("未提供支付单号")
 	}
 
-	var quotaToAdd int
+	var quotaToAdd int64
 	topUp := &TopUp{}
 
 	refCol := "`trade_no`"
@@ -603,7 +603,7 @@ func RechargeWaffoPancake(tradeNo string) (err error) {
 		return errors.New("未提供支付单号")
 	}
 
-	var quotaToAdd int
+	var quotaToAdd int64
 	topUp := &TopUp{}
 
 	refCol := "`trade_no`"

@@ -426,7 +426,7 @@ func GenerateAccessToken(c *gin.Context) {
 }
 
 type TransferAffQuotaRequest struct {
-	Quota int `json:"quota" binding:"required"`
+	Quota int64 `json:"quota" binding:"required"`
 }
 
 func TransferAffQuota(c *gin.Context) {
@@ -1026,6 +1026,7 @@ func CreateUser(c *gin.Context) {
 		Password:    user.Password,
 		DisplayName: user.DisplayName,
 		Role:        user.Role, // 保持管理员设置的角色
+		Group:       user.Group,
 	}
 	authzTouched := false
 	if err := model.DB.Transaction(func(tx *gorm.DB) error {
@@ -1077,7 +1078,7 @@ func updateAdminPermissionsForUserInTx(c *gin.Context, tx *gorm.DB, userID int, 
 type ManageRequest struct {
 	Id     int    `json:"id"`
 	Action string `json:"action"`
-	Value  int    `json:"value"`
+	Value  int64  `json:"value"`
 	Mode   string `json:"mode"`
 }
 

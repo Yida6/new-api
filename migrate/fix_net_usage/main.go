@@ -76,7 +76,7 @@ type refundLog struct {
 	Username  string
 	ModelName string
 	CreatedAt int64
-	Quota     int
+	Quota     int64
 	Group     string
 	TokenID   int
 	ChannelID int
@@ -241,7 +241,7 @@ func processRefunds(refunds []refundLog, usedQuotaApplied, quotaDataApplied map[
 	applied, skipped := 0, 0
 	inserted, updated := 0, 0
 	userClamped, channelClamped := 0, 0
-	userTouched := map[int]int{}
+	userTouched := map[int]int64{}
 	channelTouched := map[int]int64{}
 
 	for _, r := range refunds {
@@ -337,8 +337,8 @@ func sumRefunds(m map[int]int64) int64 {
 }
 
 // decrementUserUsedQuota 在事务内将用户 used_quota 减去 refund；不足时钳制为 0 并返回 clamped=true。
-func decrementUserUsedQuota(tx *gorm.DB, userId int, refund int) (clamped bool, err error) {
-	var cur int
+func decrementUserUsedQuota(tx *gorm.DB, userId int, refund int64) (clamped bool, err error) {
+	var cur int64
 	if err := tx.Model(&model.User{}).Where("id = ?", userId).Select("used_quota").Scan(&cur).Error; err != nil {
 		return false, err
 	}

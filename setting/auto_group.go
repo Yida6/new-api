@@ -11,7 +11,7 @@ import (
 const DefaultMaxTokenAutoGroups = 5
 
 var autoGroups = []string{
-	"default",
+	"normal",
 }
 
 var DefaultUseAutoGroup = false

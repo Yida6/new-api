@@ -115,7 +115,7 @@ func cacheApplyTokenQuotaDelta(id int, key string, delta int64) (cacheQuotaResul
 // 请求要么成功且扣款，要么失败（补偿缓存）不扣款。
 // 余额不足/用户不存在时 RowsAffected=0，返回 gorm.ErrRecordNotFound，调用方据此
 // 补偿缓存并按"预扣失败"处理。
-func persistUserQuotaDelta(id int, delta int) error {
+func persistUserQuotaDelta(id int, delta int64) error {
 	if common.BatchUpdateEnabled && delta > 0 {
 		addNewRecord(BatchUpdateTypeUserQuota, id, delta)
 		return nil
@@ -155,7 +155,7 @@ func persistUserQuotaDelta(id int, delta int) error {
 //     合批，非批量直写。
 // 余额不足/令牌不存在时 RowsAffected=0，返回 gorm.ErrRecordNotFound，
 // 调用方据此补偿缓存并按"预扣失败/额度不足"处理（与用户钱包路径同一语义）。
-func persistTokenQuotaDelta(id int, delta int) error {
+func persistTokenQuotaDelta(id int, delta int64) error {
 	if common.BatchUpdateEnabled && delta > 0 {
 		addNewRecord(BatchUpdateTypeTokenQuota, id, delta)
 		return nil
@@ -180,14 +180,14 @@ func persistTokenQuotaDelta(id int, delta int) error {
 	return nil
 }
 
-func reserveUserQuotaDB(id int, quota int) (bool, error) {
+func reserveUserQuotaDB(id int, quota int64) (bool, error) {
 	result := DB.Model(&User{}).
 		Where("id = ? AND quota >= ?", id, quota).
 		Update("quota", gorm.Expr("quota - ?", quota))
 	return result.RowsAffected == 1, result.Error
 }
 
-func reserveTokenQuotaDB(id int, quota int) (bool, error) {
+func reserveTokenQuotaDB(id int, quota int64) (bool, error) {
 	result := DB.Model(&Token{}).
 		Where("id = ? AND remain_quota >= ?", id, quota).
 		Updates(map[string]interface{}{
@@ -201,7 +201,7 @@ func reserveTokenQuotaDB(id int, quota int) (bool, error) {
 // TryReserveUserQuota atomically checks and deducts a user's wallet quota.
 // 缓存命中时以缓存余额为准（避免批量模式下过期的数据库余额放大并发超扣）；
 // Redis 异常或水合失败时降级为数据库条件更新，保证服务可用。
-func TryReserveUserQuota(id int, quota int) (bool, error) {
+func TryReserveUserQuota(id int, quota int64) (bool, error) {
 	if quota < 0 {
 		return false, errors.New("quota 不能为负数！")
 	}
@@ -251,7 +251,7 @@ func TryReserveUserQuota(id int, quota int) (bool, error) {
 // `remain_quota >= quota` 守卫；数据库守卫失败（余额不足/令牌缺失）时补偿
 // 已成功的 Redis 预扣并返回 (false, nil)（额度不足），绝不把余额扣成负数，
 // 也绝不让扣减进入无守卫批量队列。
-func TryReserveTokenQuota(id int, key string, quota int, unlimited bool) (bool, error) {
+func TryReserveTokenQuota(id int, key string, quota int64, unlimited bool) (bool, error) {
 	if quota < 0 {
 		return false, errors.New("quota 不能为负数！")
 	}

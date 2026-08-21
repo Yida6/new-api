@@ -47,7 +47,7 @@ func hasCustomModelRatio(modelName string, currentRatio float64) bool {
 	return currentRatio != defaultRatio
 }
 
-func calculateAudioQuota(info QuotaInfo) (int, *common.QuotaClamp) {
+func calculateAudioQuota(info QuotaInfo) (int64, *common.QuotaClamp) {
 	if info.UsePrice {
 		modelPrice := decimal.NewFromFloat(info.ModelPrice)
 		quotaPerUnit := decimal.NewFromFloat(common.QuotaPerUnit)
@@ -384,7 +384,7 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 	})
 }
 
-func PreConsumeTokenQuota(relayInfo *relaycommon.RelayInfo, quota int) error {
+func PreConsumeTokenQuota(relayInfo *relaycommon.RelayInfo, quota int64) error {
 	if quota < 0 {
 		return errors.New("quota 不能为负数！")
 	}
@@ -397,7 +397,7 @@ func PreConsumeTokenQuota(relayInfo *relaycommon.RelayInfo, quota int) error {
 		return err
 	}
 	if !reserved {
-		remainQuota := 0
+		remainQuota := int64(0)
 		if token, tokenErr := model.GetTokenByKey(relayInfo.TokenKey, false); tokenErr == nil && token != nil {
 			remainQuota = token.RemainQuota
 		}
@@ -406,7 +406,7 @@ func PreConsumeTokenQuota(relayInfo *relaycommon.RelayInfo, quota int) error {
 	return nil
 }
 
-func PostConsumeQuota(relayInfo *relaycommon.RelayInfo, quota int, preConsumedQuota int, sendEmail bool) (err error) {
+func PostConsumeQuota(relayInfo *relaycommon.RelayInfo, quota int64, preConsumedQuota int64, sendEmail bool) (err error) {
 
 	// 1) Consume from wallet quota OR subscription item
 	if relayInfo != nil && relayInfo.BillingSource == BillingSourceSubscription {
@@ -452,12 +452,12 @@ func PostConsumeQuota(relayInfo *relaycommon.RelayInfo, quota int, preConsumedQu
 	return nil
 }
 
-func checkAndSendQuotaNotify(relayInfo *relaycommon.RelayInfo, quota int, preConsumedQuota int) {
+func checkAndSendQuotaNotify(relayInfo *relaycommon.RelayInfo, quota int64, preConsumedQuota int64) {
 	gopool.Go(func() {
 		userSetting := relayInfo.UserSetting
-		threshold := common.QuotaRemindThreshold
+		threshold := int64(common.QuotaRemindThreshold)
 		if userSetting.QuotaWarningThreshold != 0 {
-			threshold = int(userSetting.QuotaWarningThreshold)
+			threshold = int64(userSetting.QuotaWarningThreshold)
 		}
 
 		//noMoreQuota := userCache.Quota-(quota+preConsumedQuota) <= 0
@@ -510,9 +510,9 @@ func checkAndSendSubscriptionQuotaNotify(relayInfo *relaycommon.RelayInfo) {
 		}
 
 		userSetting := relayInfo.UserSetting
-		threshold := common.QuotaRemindThreshold
+		threshold := int64(common.QuotaRemindThreshold)
 		if userSetting.QuotaWarningThreshold != 0 {
-			threshold = int(userSetting.QuotaWarningThreshold)
+			threshold = int64(userSetting.QuotaWarningThreshold)
 		}
 
 		usedAfter := relayInfo.SubscriptionAmountUsedAfterPreConsume + relayInfo.SubscriptionPostDelta
@@ -533,13 +533,13 @@ func checkAndSendSubscriptionQuotaNotify(relayInfo *relaycommon.RelayInfo) {
 
 		if notifyType == dto.NotifyTypeBark {
 			content = "{{value}}，剩余额度：{{value}}，请及时充值"
-			values = []interface{}{prompt, logger.FormatQuota(int(remaining))}
+			values = []interface{}{prompt, logger.FormatQuota(remaining)}
 		} else if notifyType == dto.NotifyTypeGotify {
 			content = "{{value}}，当前剩余额度为 {{value}}，请及时充值。"
-			values = []interface{}{prompt, logger.FormatQuota(int(remaining))}
+			values = []interface{}{prompt, logger.FormatQuota(remaining)}
 		} else {
 			content = "{{value}}，当前剩余额度为 {{value}}，为了不影响您的使用，请及时充值。<br/>充值链接：<a href='{{value}}'>{{value}}</a>"
-			values = []interface{}{prompt, logger.FormatQuota(int(remaining)), topUpLink, topUpLink}
+			values = []interface{}{prompt, logger.FormatQuota(remaining), topUpLink, topUpLink}
 		}
 
 		if err := NotifyUser(relayInfo.UserId, relayInfo.UserEmail, relayInfo.UserSetting, dto.NewNotify(dto.NotifyTypeQuotaExceed, prompt, content, values)); err != nil {

@@ -27,13 +27,13 @@ func TestUpdateUserUsedQuota_DoesNotTouchRequestCount(t *testing.T) {
 
 	var u User
 	require.NoError(t, DB.Select("used_quota, request_count").Where("id = ?", userID).First(&u).Error)
-	assert.Equal(t, 1000, u.UsedQuota)
+	assert.Equal(t, int64(1000), u.UsedQuota)
 	assert.Equal(t, 5, u.RequestCount)
 
 	// 0 增量：无副作用
 	assert.True(t, UpdateUserUsedQuota(userID, 0))
 	require.NoError(t, DB.Select("used_quota").Where("id = ?", userID).First(&u).Error)
-	assert.Equal(t, 1000, u.UsedQuota)
+	assert.Equal(t, int64(1000), u.UsedQuota)
 }
 
 func TestUpdateUserUsedQuota_BatchMode(t *testing.T) {
@@ -55,7 +55,7 @@ func TestUpdateUserUsedQuota_BatchMode(t *testing.T) {
 
 	var u User
 	require.NoError(t, DB.Select("used_quota, request_count").Where("id = ?", userID).First(&u).Error)
-	assert.Equal(t, 1000, u.UsedQuota)
+	assert.Equal(t, int64(1000), u.UsedQuota)
 	assert.Equal(t, 1, u.RequestCount)
 
 	var ch Channel
@@ -75,12 +75,12 @@ func TestUpdateUserUsedQuota_RefundGuard(t *testing.T) {
 
 	var u User
 	require.NoError(t, DB.Select("used_quota").Where("id = ?", userID).First(&u).Error)
-	assert.Equal(t, 100, u.UsedQuota)
+	assert.Equal(t, int64(100), u.UsedQuota)
 
 	// 冲减不超过累计消耗：正常执行
 	assert.True(t, UpdateUserUsedQuota(userID, -60))
 	require.NoError(t, DB.Select("used_quota").Where("id = ?", userID).First(&u).Error)
-	assert.Equal(t, 40, u.UsedQuota)
+	assert.Equal(t, int64(40), u.UsedQuota)
 }
 
 // ---------------------------------------------------------------------------
@@ -112,7 +112,7 @@ func TestSumUsedQuota_NetAndRpm(t *testing.T) {
 	stat, err := SumUsedQuota(LogTypeUnknown, 0, 0, "seedance-01", "net", "tok", 2004, "default")
 	require.NoError(t, err)
 	// 净消费 = 5000 + 2000 - 4000 = 3000
-	assert.Equal(t, 3000, stat.Quota)
+	assert.Equal(t, int64(3000), stat.Quota)
 	// RPM 只统计真实请求（提交日志 1 条），补扣/退款不计
 	assert.Equal(t, 1, stat.Rpm)
 	assert.Equal(t, 0, stat.Tpm)
@@ -148,7 +148,7 @@ func TestLogQuotaData_AdjustmentCountZero(t *testing.T) {
 	require.Len(t, rows, 1)
 	// 聚合：count = 1 + 0 = 1；quota = 5000 - 4000 = 1000
 	assert.Equal(t, 1, rows[0].Count)
-	assert.Equal(t, 1000, rows[0].Quota)
+	assert.Equal(t, int64(1000), rows[0].Quota)
 }
 
 func TestRecordTaskBillingLog_WritesQuotaDataAdjustment(t *testing.T) {
@@ -179,7 +179,7 @@ func TestRecordTaskBillingLog_WritesQuotaDataAdjustment(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, rows, 1)
 	assert.Equal(t, 0, rows[0].Count)     // 调整记录不增加请求计数
-	assert.Equal(t, -2000, rows[0].Quota) // +2000 - 4000
+	assert.Equal(t, int64(-2000), rows[0].Quota) // +2000 - 4000
 }
 
 // ---------------------------------------------------------------------------
@@ -195,7 +195,7 @@ func TestApplyTaskQuotaDelta_AtomicAndGuards(t *testing.T) {
 	task := &Task{TaskID: "t-atomic", UserId: userID, ChannelId: channelID, Quota: 5000, Status: TaskStatusInProgress}
 	require.NoError(t, DB.Create(task).Error)
 
-	readAll := func() (userQuota, userUsed int, channelUsed int64, taskQuota int) {
+	readAll := func() (userQuota, userUsed, channelUsed, taskQuota int64) {
 		var u User
 		require.NoError(t, DB.Select("quota, used_quota").Where("id = ?", userID).First(&u).Error)
 		var ch Channel
@@ -208,18 +208,18 @@ func TestApplyTaskQuotaDelta_AtomicAndGuards(t *testing.T) {
 	// 退款：资金 + 用户/渠道累计消耗 + 任务额度原子调整
 	assert.True(t, ApplyTaskQuotaDelta(task, -3000, false))
 	q, uq, cuq, tq := readAll()
-	assert.Equal(t, 13000, q)        // 钱包 +3000
-	assert.Equal(t, 2000, uq)        // 用户累计 5000-3000
+	assert.Equal(t, int64(13000), q)        // 钱包 +3000
+	assert.Equal(t, int64(2000), uq)        // 用户累计 5000-3000
 	assert.EqualValues(t, 2000, cuq) // 渠道累计 5000-3000
-	assert.Equal(t, 2000, tq)        // 任务剩余 5000-3000
+	assert.Equal(t, int64(2000), tq)        // 任务剩余 5000-3000
 
 	// 用户守卫失败：整体回滚（用户累计 2000 不足以冲减 5000）
 	assert.False(t, ApplyTaskQuotaDelta(task, -5000, false))
 	q, uq, cuq, tq = readAll()
-	assert.Equal(t, 13000, q)
-	assert.Equal(t, 2000, uq)
+	assert.Equal(t, int64(13000), q)
+	assert.Equal(t, int64(2000), uq)
 	assert.EqualValues(t, 2000, cuq)
-	assert.Equal(t, 2000, tq)
+	assert.Equal(t, int64(2000), tq)
 }
 
 func TestApplyTaskQuotaDelta_ChannelGuard(t *testing.T) {
@@ -237,12 +237,12 @@ func TestApplyTaskQuotaDelta_ChannelGuard(t *testing.T) {
 
 	var u User
 	require.NoError(t, DB.Select("quota, used_quota").Where("id = ?", userID).First(&u).Error)
-	assert.Equal(t, 10000, u.Quota)
-	assert.Equal(t, 5000, u.UsedQuota)
+	assert.Equal(t, int64(10000), u.Quota)
+	assert.Equal(t, int64(5000), u.UsedQuota)
 	var ch Channel
 	require.NoError(t, DB.Select("used_quota").Where("id = ?", channelID).First(&ch).Error)
 	assert.EqualValues(t, 100, ch.UsedQuota)
 	var tk Task
 	require.NoError(t, DB.Select("quota").Where("id = ?", task.ID).First(&tk).Error)
-	assert.Equal(t, 5000, tk.Quota)
+	assert.Equal(t, int64(5000), tk.Quota)
 }

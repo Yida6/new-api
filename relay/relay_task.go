@@ -27,7 +27,7 @@ type TaskSubmitResult struct {
 	UpstreamTaskID string
 	TaskData       []byte
 	Platform       constant.TaskPlatform
-	Quota          int
+	Quota          int64
 	//PerCallPrice   types.PriceData
 }
 
@@ -333,7 +333,7 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 
 // recalcQuotaFromRatios 根据 adjustedRatios 重新计算 quota。
 // 公式: baseQuota × ∏(ratio) — 其中 baseQuota 是不含 OtherRatios 的基础额度。
-func recalcQuotaFromRatios(info *relaycommon.RelayInfo, ratios map[string]float64) (int, bool) {
+func recalcQuotaFromRatios(info *relaycommon.RelayInfo, ratios map[string]float64) (int64, bool) {
 	// 从 PriceData 获取不含 OtherRatios 的基础价格
 	baseQuota := info.PriceData.RemoveOtherRatiosFromFloat(float64(info.PriceData.Quota))
 	priceData := info.PriceData

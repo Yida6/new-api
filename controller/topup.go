@@ -178,13 +178,13 @@ func getPayMoney(amount int64, group string) float64 {
 }
 
 func getMinTopup() int64 {
-	minTopup := operation_setting.MinTopUp
+	minTopup := int64(operation_setting.MinTopUp)
 	if operation_setting.GetQuotaDisplayType() == operation_setting.QuotaDisplayTypeTokens {
 		dMinTopup := decimal.NewFromInt(int64(minTopup))
 		dQuotaPerUnit := decimal.NewFromFloat(common.QuotaPerUnit)
 		minTopup = common.QuotaFromDecimal(dMinTopup.Mul(dQuotaPerUnit))
 	}
-	return int64(minTopup)
+	return minTopup
 }
 
 func RequestEpay(c *gin.Context) {

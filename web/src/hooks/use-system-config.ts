@@ -44,6 +44,7 @@ interface StatusApiResponse {
     display_in_currency?: boolean
     quota_display_type?: CurrencyDisplayType
     quota_per_unit?: number
+    max_quota?: number
     usd_exchange_rate?: number
     custom_currency_symbol?: string
     custom_currency_exchange_rate?: number
@@ -79,6 +80,7 @@ export function mapStatusDataToConfig(
       data.quota_per_unit,
       DEFAULT_CURRENCY_CONFIG.quotaPerUnit
     ),
+    maxQuota: toNumber(data.max_quota, DEFAULT_CURRENCY_CONFIG.maxQuota),
     usdExchangeRate: toNumber(
       data.usd_exchange_rate,
       DEFAULT_CURRENCY_CONFIG.usdExchangeRate

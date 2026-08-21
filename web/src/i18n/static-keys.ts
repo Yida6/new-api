@@ -140,6 +140,9 @@ export const STATIC_I18N_KEYS = [
   'Count must be between {{min}} and {{max}}',
   'Expired time cannot be earlier than current time',
   'Quota must be a positive number',
+  'Quota must be zero or greater',
+  'Quota exceeds the maximum allowed value',
+  'Maximum: {{max}}',
   'Successfully created {{count}} redemption codes',
 
   // Home page (constants-driven labels)

@@ -20,7 +20,7 @@ import (
 //
 // 返回值：消费日志是否实际写入成功。调用方应把它持久化为任务的 ConsumeLogRecorded，
 // 保证"消费-退款/补扣"日志口径对称，绝不使用全局开关 common.LogConsumeEnabled 代替。
-func consumeMjTaskBilling(c *gin.Context, info *relaycommon.RelayInfo, quota int, logContent string, other map[string]interface{}, modelName string) (bool, error) {
+func consumeMjTaskBilling(c *gin.Context, info *relaycommon.RelayInfo, quota int64, logContent string, other map[string]interface{}, modelName string) (bool, error) {
 	if err := service.PostConsumeQuota(info, quota, 0, true); err != nil {
 		common.SysLog("error consuming token remain quota: " + err.Error())
 	}
@@ -48,7 +48,7 @@ func consumeMjTaskBilling(c *gin.Context, info *relaycommon.RelayInfo, quota int
 // 统计失败不中止任务落库（上游已创建、钱包已扣款，本地必须保留任务生命周期记录），
 // 退款路径按 BillingStatsFailed 跳过累计消耗冲减（见 ApplyWalletRefundUsedQuota）。
 // 供 RelayMidjourneySubmit / RelaySwapFace 共用，保证两条路径标记逻辑一致。
-func applyMjBillingAndMark(c *gin.Context, info *relaycommon.RelayInfo, task *model.Midjourney, quota int, logContent string, other map[string]interface{}, modelName string) {
+func applyMjBillingAndMark(c *gin.Context, info *relaycommon.RelayInfo, task *model.Midjourney, quota int64, logContent string, other map[string]interface{}, modelName string) {
 	consumeLogRecorded, bErr := consumeMjTaskBilling(c, info, quota, logContent, other, modelName)
 	task.ConsumeLogRecorded = consumeLogRecorded
 	if bErr != nil {

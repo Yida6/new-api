@@ -46,7 +46,7 @@ func postConsumeUserSubscriptionDeltaTx(tx *gorm.DB, userSubscriptionId int, del
 }
 
 // applyUserUsedQuotaDelta 在事务内调整用户累计消耗；退款方向带 used_quota >= -delta 守卫。
-func applyUserUsedQuotaDelta(tx *gorm.DB, userId int, delta int) error {
+func applyUserUsedQuotaDelta(tx *gorm.DB, userId int, delta int64) error {
 	if delta < 0 {
 		res := tx.Model(&User{}).Where("id = ? AND used_quota >= ?", userId, -delta).
 			Update("used_quota", gorm.Expr("used_quota + ?", delta))
@@ -64,7 +64,7 @@ func applyUserUsedQuotaDelta(tx *gorm.DB, userId int, delta int) error {
 
 // applyChannelUsedQuotaDelta 在事务内调整渠道累计消耗；退款方向带 used_quota >= -delta 守卫，
 // 正方向要求渠道行存在（RowsAffected==1，渠道缺失时累计值写入落空，会让后续退款守卫失败）。
-func applyChannelUsedQuotaDelta(tx *gorm.DB, channelId int, delta int) error {
+func applyChannelUsedQuotaDelta(tx *gorm.DB, channelId int, delta int64) error {
 	if channelId <= 0 {
 		// 无渠道（channel_id=0）不维护渠道累计消耗，直接跳过（与历史行为一致）。
 		return nil
@@ -107,7 +107,7 @@ func applyChannelUsedQuotaDelta(tx *gorm.DB, channelId int, delta int) error {
 //     （正确值应为实际总消耗 actualQuota，而非差额），且后续退款会残留虚假消耗。
 //
 // 统计缺失由人工对账（提交时已 SysError 告警），本函数只保证资金方向正确。
-func ApplyTaskQuotaDelta(task *Task, delta int, isSubscription bool) bool {
+func ApplyTaskQuotaDelta(task *Task, delta int64, isSubscription bool) bool {
 	return ApplyTaskQuotaDeltaGuarded(task, delta, isSubscription, TaskQuotaDeltaOptions{}).IsSuccess()
 }
 
@@ -172,7 +172,7 @@ var (
 //     缓存路径也会在落账时再走数据库守卫）。事务提交后再同步/失效钱包缓存。
 //   - 订阅补扣维持既有 AmountTotal 上限守卫，超限返回 SubscriptionExceeded。
 //   - 事务失败时内存 task.Quota 不被污染（占位模型 UPDATE），成功提交后才更新。
-func ApplyTaskQuotaDeltaGuarded(task *Task, delta int, isSubscription bool, opts TaskQuotaDeltaOptions) TaskQuotaDeltaResult {
+func ApplyTaskQuotaDeltaGuarded(task *Task, delta int64, isSubscription bool, opts TaskQuotaDeltaOptions) TaskQuotaDeltaResult {
 	if delta == 0 {
 		return TaskQuotaDeltaSuccess
 	}
@@ -252,7 +252,7 @@ func ApplyTaskQuotaDeltaGuarded(task *Task, delta int, isSubscription bool, opts
 
 // applyTaskQuotaDeltaTx 更新任务剩余额度并严格校验行命中数（任务被删除时
 // 不得静默成功）。使用占位值避免 GORM 回写污染内存对象。
-func applyTaskQuotaDeltaTx(tx *gorm.DB, task *Task, delta int) error {
+func applyTaskQuotaDeltaTx(tx *gorm.DB, task *Task, delta int64) error {
 	newQuota := task.Quota + delta
 	res := tx.Model(&Task{}).Where("id = ?", task.ID).Update("quota", newQuota)
 	if res.Error != nil {
@@ -290,7 +290,7 @@ const (
 //
 // 事务提交成功后：同步钱包 Redis 缓存（钱包资金来源）与 Token Redis 缓存
 // （Token 成功调整时）；缓存操作失败不回滚已提交资金，只记录错误并尝试失效。
-func ApplySeedanceSettle(task *Task, delta int, isSubscription bool, opts TaskQuotaDeltaOptions) (TaskQuotaDeltaResult, TokenAdjustResult) {
+func ApplySeedanceSettle(task *Task, delta int64, isSubscription bool, opts TaskQuotaDeltaOptions) (TaskQuotaDeltaResult, TokenAdjustResult) {
 	if delta == 0 {
 		return TaskQuotaDeltaSuccess, TokenAdjustNotApplicable
 	}
@@ -413,7 +413,7 @@ func ApplySeedanceSettle(task *Task, delta int, isSubscription bool, opts TaskQu
 // 调用方语义：
 //   - delta>0 失败 → 调用方在同一事务内累加 tasks.token_delta_pending 待补偿；
 //   - delta<0 失败 → 调用方应整体回滚事务（资金与 Token 不可分叉）。
-func applyTokenQuotaDeltaTx(tx *gorm.DB, tokenId int, delta int) (ok bool, tokenKey string) {
+func applyTokenQuotaDeltaTx(tx *gorm.DB, tokenId int, delta int64) (ok bool, tokenKey string) {
 	if tokenId <= 0 || delta == 0 {
 		return true, ""
 	}
@@ -471,7 +471,7 @@ func applyTokenQuotaDeltaTx(tx *gorm.DB, tokenId int, delta int) (ok bool, token
 // 任一守卫失败或任一步失败则整体回滚返回 false。
 // statsRecorded 表示提交时累计统计是否已写入：统计写入失败（BillingStatsFailed）时
 // used_quota 从未累加，必须跳过冲减，否则守卫永久卡死。
-func ApplyWalletRefundUsedQuota(userId int, channelId int, refund int, statsRecorded bool) bool {
+func ApplyWalletRefundUsedQuota(userId int, channelId int, refund int64, statsRecorded bool) bool {
 	if refund <= 0 {
 		return true
 	}
@@ -536,7 +536,7 @@ func syncWalletQuotaCacheAfterCommit(userId int, delta int64, op string) {
 // 若不检查会把"用户/渠道不存在"当成"统计写入成功"——任务照常插入但累计值缺失，
 // 后续退款守卫（used_quota >= refund）永久失败。因此用户行必须命中（RowsAffected==1），
 // 渠道行（channelId>0）由 applyChannelUsedQuotaDelta 校验，缺失即返回错误。
-func ApplyPreConsumeUsedQuota(userId int, channelId int, quota int) error {
+func ApplyPreConsumeUsedQuota(userId int, channelId int, quota int64) error {
 	return DB.Transaction(func(tx *gorm.DB) error {
 		res := tx.Model(&User{}).Where("id = ?", userId).Updates(map[string]interface{}{
 			"used_quota":    gorm.Expr("used_quota + ?", quota),
@@ -639,7 +639,7 @@ var errTokenDeltaCompensateSkipped = errors.New("token delta compensate skipped"
 
 // addTaskTokenDeltaPendingTx 在给定事务内原子累加任务的待补偿 Token 差额
 // （结算与 pending 落库同一事务提交，杜绝崩溃窗口；见 ApplySeedanceSettle）。
-func addTaskTokenDeltaPendingTx(tx *gorm.DB, taskID int64, delta int) error {
+func addTaskTokenDeltaPendingTx(tx *gorm.DB, taskID int64, delta int64) error {
 	if taskID <= 0 || delta <= 0 {
 		return nil
 	}
@@ -660,7 +660,7 @@ func addTaskTokenDeltaPendingTx(tx *gorm.DB, taskID int64, delta int) error {
 // UPDATE 防止并发补偿与结算交错）。返回更新后的标记值。
 // 注意：Seedance 结算路径（ApplySeedanceSettle）已把 pending 与资金放在同一
 // 事务提交，本函数只保留给显式修复/管理工具使用，绝不再作为结算的恢复依据。
-func AddTaskTokenDeltaPending(taskID int64, delta int) error {
+func AddTaskTokenDeltaPending(taskID int64, delta int64) error {
 	return addTaskTokenDeltaPendingTx(DB, taskID, delta)
 }
 

@@ -60,7 +60,7 @@ type textQuotaSummary struct {
 	CacheCreationRatio     float64
 	CacheCreationRatio5m   float64
 	CacheCreationRatio1h   float64
-	Quota                  int
+	Quota                  int64
 	IsClaudeUsageSemantic  bool
 	UsageSemantic          string
 	AudioInputPrice        float64
@@ -200,7 +200,7 @@ func noteQuotaClamp(relayInfo *relaycommon.RelayInfo, clamp *common.QuotaClamp) 
 	}
 }
 
-func composeTieredTextQuota(relayInfo *relaycommon.RelayInfo, summary textQuotaSummary, tieredQuota int, tieredResult *billingexpr.TieredResult) int {
+func composeTieredTextQuota(relayInfo *relaycommon.RelayInfo, summary textQuotaSummary, tieredQuota int64, tieredResult *billingexpr.TieredResult) int64 {
 	if summary.ToolCallSurchargeQuota.IsZero() {
 		return tieredQuota
 	}

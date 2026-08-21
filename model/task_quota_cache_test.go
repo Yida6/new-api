@@ -83,7 +83,7 @@ func TestSyncWalletQuotaCacheAfterCommit_DeletesCacheOnSyncFailure(t *testing.T)
 	// 下次读取从数据库水合正确余额（800），不再按旧的 2000 授权
 	ub, err := GetUserCache(uid)
 	require.NoError(t, err)
-	assert.Equal(t, 800, ub.Quota, "水合后的余额必须来自数据库")
+	assert.Equal(t, int64(800), ub.Quota, "水合后的余额必须来自数据库")
 }
 
 // 成功路径对照：同步成功时缓存余额与数据库一致，不删除缓存。
@@ -101,7 +101,7 @@ func TestSyncWalletQuotaCacheAfterCommit_SyncSuccessKeepsCache(t *testing.T) {
 
 	ub, err := GetUserCache(uid)
 	require.NoError(t, err)
-	assert.Equal(t, 800, ub.Quota, "同步成功后缓存余额即为数据库余额")
+	assert.Equal(t, int64(800), ub.Quota, "同步成功后缓存余额即为数据库余额")
 	exists, err := client.Exists(ctx, getUserCacheKey(uid)).Result()
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), exists, "同步成功不应删除缓存")
@@ -130,7 +130,7 @@ func TestTryReserveUserQuota_DBGuardRejectsStaleCacheWindow(t *testing.T) {
 	require.NoError(t, err, "余额不足应视为预扣失败而非数据库错误")
 	assert.False(t, reserved, "数据库余额不足时预扣必须失败")
 
-	assert.Equal(t, 50, getUserQuotaFromDB(t, uid), "数据库余额不得被扣成负数")
+	assert.Equal(t, int64(50), getUserQuotaFromDB(t, uid), "数据库余额不得被扣成负数")
 
 	// 缓存被补偿回 100（授权未生效，余额仍为旧值）
 	quotaVal, err := client.HGet(ctx, getUserCacheKey(uid), "Quota").Result()
@@ -142,7 +142,7 @@ func TestTryReserveUserQuota_DBGuardRejectsStaleCacheWindow(t *testing.T) {
 	reserved, err = TryReserveUserQuota(uid, 60)
 	require.NoError(t, err)
 	assert.True(t, reserved)
-	assert.Equal(t, 40, getUserQuotaFromDB(t, uid))
+	assert.Equal(t, int64(40), getUserQuotaFromDB(t, uid))
 }
 
 // ===========================================================================
@@ -174,7 +174,7 @@ func TestTryReserveUserQuota_BatchModeDeductionDirectGuarded(t *testing.T) {
 	reserved, err := TryReserveUserQuota(uid, 60)
 	require.NoError(t, err)
 	assert.False(t, reserved, "批量模式下窗口内请求必须被同步拒绝，杜绝白嫖窗口")
-	assert.Equal(t, 50, getUserQuotaFromDB(t, uid), "DB 不得为负")
+	assert.Equal(t, int64(50), getUserQuotaFromDB(t, uid), "DB 不得为负")
 
 	// 被拒绝的授权未入队（没有待异步落账的扣款）
 	batchUpdateLocks[BatchUpdateTypeUserQuota].Lock()
@@ -192,7 +192,7 @@ func TestTryReserveUserQuota_BatchModeDeductionDirectGuarded(t *testing.T) {
 	reserved, err = TryReserveUserQuota(uid, 30)
 	require.NoError(t, err)
 	assert.True(t, reserved)
-	assert.Equal(t, 70, getUserQuotaFromDB(t, uid), "批量模式下授权扣减必须立即直写落账")
+	assert.Equal(t, int64(70), getUserQuotaFromDB(t, uid), "批量模式下授权扣减必须立即直写落账")
 
 	// 加方向（充值/退款落账）仍走批量队列
 	require.NoError(t, persistUserQuotaDelta(uid, +10))
@@ -200,5 +200,5 @@ func TestTryReserveUserQuota_BatchModeDeductionDirectGuarded(t *testing.T) {
 	enqueuedVal, ok := batchUpdateStores[BatchUpdateTypeUserQuota][uid]
 	batchUpdateLocks[BatchUpdateTypeUserQuota].Unlock()
 	assert.True(t, ok, "加方向应进入批量队列")
-	assert.Equal(t, 10, enqueuedVal)
+	assert.Equal(t, int64(10), enqueuedVal)
 }

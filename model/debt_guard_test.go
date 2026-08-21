@@ -22,7 +22,7 @@ import (
 // 串行化，语义等价）。数据库守卫是最终资金边界，Redis 缓存只优化授权。
 // ===========================================================================
 
-func seedGuardTask(t *testing.T, taskID string, userID, quota int, preConsumed int) *Task {
+func seedGuardTask(t *testing.T, taskID string, userID int, quota int64, preConsumed int64) *Task {
 	t.Helper()
 	u := &User{Id: userID, Username: fmt.Sprintf("guard_%d", userID), Quota: quota, Status: common.UserStatusEnabled, Role: common.RoleCommonUser, AffCode: fmt.Sprintf("aff-guard-%d", userID)}
 	require.NoError(t, DB.Create(u).Error)
@@ -52,8 +52,8 @@ func TestGuardedSettle_ExactBalance(t *testing.T) {
 
 	res := ApplyTaskQuotaDeltaGuarded(task, actual-preConsumed, false, TaskQuotaDeltaOptions{GuardPositiveDelta: true})
 	require.Equal(t, TaskQuotaDeltaSuccess, res)
-	assert.Equal(t, 0, getUserQuotaDB(t, userID), "余额恰好够差额时结算成功且余额为 0")
-	assert.Equal(t, actual, task.Quota, "任务额度更新为实际额度")
+	assert.Equal(t, int64(0), getUserQuotaDB(t, userID), "余额恰好够差额时结算成功且余额为 0")
+	assert.Equal(t, int64(actual), task.Quota, "任务额度更新为实际额度")
 }
 
 func TestGuardedSettle_ShortByOneRejected(t *testing.T) {
@@ -64,9 +64,9 @@ func TestGuardedSettle_ShortByOneRejected(t *testing.T) {
 
 	res := ApplyTaskQuotaDeltaGuarded(task, actual-preConsumed, false, TaskQuotaDeltaOptions{GuardPositiveDelta: true})
 	require.Equal(t, TaskQuotaDeltaInsufficientBalance, res, "余额不足必须返回可识别的 InsufficientBalance")
-	assert.Equal(t, quota, getUserQuotaDB(t, userID), "拒绝补扣时余额不变")
-	assert.GreaterOrEqual(t, getUserQuotaDB(t, userID), 0, "余额永不为负数")
-	assert.Equal(t, preConsumed, task.Quota, "守卫失败保留原额度（内存不被污染）")
+	assert.Equal(t, int64(quota), getUserQuotaDB(t, userID), "拒绝补扣时余额不变")
+	assert.GreaterOrEqual(t, getUserQuotaDB(t, userID), int64(0), "余额永不为负数")
+	assert.Equal(t, int64(preConsumed), task.Quota, "守卫失败保留原额度（内存不被污染）")
 }
 
 func TestGuardedSettle_UserNotFound(t *testing.T) {
@@ -80,7 +80,7 @@ func TestGuardedSettle_UserNotFound(t *testing.T) {
 
 	res := ApplyTaskQuotaDeltaGuarded(task, 500, false, TaskQuotaDeltaOptions{GuardPositiveDelta: true})
 	require.Equal(t, TaskQuotaDeltaUserNotFound, res)
-	assert.Equal(t, 1000, task.Quota)
+	assert.Equal(t, int64(1000), task.Quota)
 }
 
 func TestGuardedSettle_RefundUnaffected(t *testing.T) {
@@ -92,7 +92,7 @@ func TestGuardedSettle_RefundUnaffected(t *testing.T) {
 
 	res := ApplyTaskQuotaDeltaGuarded(task, actual-preConsumed, false, TaskQuotaDeltaOptions{GuardPositiveDelta: true})
 	require.Equal(t, TaskQuotaDeltaSuccess, res)
-	assert.Equal(t, quota+(preConsumed-actual), getUserQuotaDB(t, userID), "多预扣部分退款")
+	assert.Equal(t, int64(quota+(preConsumed-actual)), getUserQuotaDB(t, userID), "多预扣部分退款")
 }
 
 func TestGuardedSettle_SubscriptionExceeded(t *testing.T) {
@@ -129,7 +129,7 @@ func TestGuardedSettle_DefaultUnconditionalKeepsCompat(t *testing.T) {
 
 	res := ApplyTaskQuotaDeltaGuarded(task, actual-preConsumed, false, TaskQuotaDeltaOptions{})
 	require.Equal(t, TaskQuotaDeltaSuccess, res)
-	assert.Equal(t, quota-(actual-preConsumed), getUserQuotaDB(t, userID), "默认语义无条件扣减（兼容分层计费）")
+	assert.Equal(t, int64(quota-(actual-preConsumed)), getUserQuotaDB(t, userID), "默认语义无条件扣减（兼容分层计费）")
 }
 
 // ===========================================================================
@@ -173,8 +173,8 @@ func TestGuardedSettle_ConcurrentNeverNegative(t *testing.T) {
 	}
 
 	quota := getUserQuotaDB(t, userID)
-	assert.GreaterOrEqual(t, quota, 0, "并发结算任意交错下余额必须 >= 0")
-	assert.Equal(t, balance-3*delta, quota, "成功收款总额 = 3 个差额（3000 余额最多收 3 个 800）")
+	assert.GreaterOrEqual(t, int64(quota), int64(0), "并发结算任意交错下余额必须 >= 0")
+	assert.Equal(t, int64(balance-3*delta), quota, "成功收款总额 = 3 个差额（3000 余额最多收 3 个 800）")
 
 	// 被拒绝的两个任务额度不变（未污染）
 	rejected := 0
@@ -184,7 +184,7 @@ func TestGuardedSettle_ConcurrentNeverNegative(t *testing.T) {
 		if reloaded.Quota == preConsumed {
 			rejected++
 		} else {
-			assert.Equal(t, preConsumed+delta, reloaded.Quota, "成功任务额度更新到实际")
+			assert.Equal(t, int64(preConsumed+delta), reloaded.Quota, "成功任务额度更新到实际")
 		}
 	}
 	assert.Equal(t, 2, rejected, "余额不足的任务必须被守卫拒绝并保持原额度")
@@ -231,10 +231,10 @@ func TestGuardedSettle_ConcurrentTopupAndSettle(t *testing.T) {
 	}
 
 	quota := getUserQuotaDB(t, userID)
-	assert.GreaterOrEqual(t, quota, 0, "并发充值+结算任意交错下余额必须 >= 0")
+	assert.GreaterOrEqual(t, int64(quota), int64(0), "并发充值+结算任意交错下余额必须 >= 0")
 	// 充值总额 = numOps/2 * topup = 10 * 1000；最多收款数受余额约束，但绝不能超扣
 	maxCollect := (initial + numOps/2*topup) / delta
-	assert.LessOrEqual(t, quota, initial+numOps/2*topup, "余额不超总入账")
+	assert.LessOrEqual(t, int64(quota), int64(initial+numOps/2*topup), "余额不超总入账")
 	_ = maxCollect
 }
 
@@ -265,9 +265,9 @@ func TestCreateDebtAndFreeze_RecordsDebtAndFreezesUser(t *testing.T) {
 	debt, err := GetTaskBillingDebtByTaskId("task-debt-1")
 	require.NoError(t, err)
 	assert.Equal(t, DebtStatusPending, debt.Status)
-	assert.Equal(t, 800, debt.DeltaQuota)
-	assert.Equal(t, 1000, debt.PreConsumedQuota)
-	assert.Equal(t, 1800, debt.ActualQuota)
+	assert.Equal(t, int64(800), debt.DeltaQuota)
+	assert.Equal(t, int64(1000), debt.PreConsumedQuota)
+	assert.Equal(t, int64(1800), debt.ActualQuota)
 	assert.False(t, debt.AlertSent, "告警发送前保持 false（可重试）")
 }
 
@@ -326,7 +326,7 @@ func TestRepayTaskBillingDebt_CollectsAndUnfreezes(t *testing.T) {
 
 	// 清偿（余额 2000 够 800）
 	require.NoError(t, RepayTaskBillingDebt(userID, debt.ID, RepayDebtOptions{}, 0))
-	assert.Equal(t, 2000-800, getUserQuotaDB(t, userID), "收款后余额扣减差额")
+	assert.Equal(t, int64(2000-800), getUserQuotaDB(t, userID), "收款后余额扣减差额")
 
 	var user User
 	require.NoError(t, DB.First(&user, userID).Error)
@@ -354,17 +354,17 @@ func TestRepayTaskBillingDebt_GuardAndIdempotency(t *testing.T) {
 	// 余额 500 < 差额 1000：清偿被守卫拒绝，余额不变
 	err = RepayTaskBillingDebt(userID, debt.ID, RepayDebtOptions{}, 0)
 	require.ErrorIs(t, err, ErrDebtInsufficientBalance, "余额不足必须返回可识别的 InsufficientBalance")
-	assert.Equal(t, 500, getUserQuotaDB(t, userID), "守卫拒绝时余额不变")
+	assert.Equal(t, int64(500), getUserQuotaDB(t, userID), "守卫拒绝时余额不变")
 
 	// 充值后清偿成功
 	require.NoError(t, IncreaseUserQuota(userID, 600, true))
 	require.NoError(t, RepayTaskBillingDebt(userID, debt.ID, RepayDebtOptions{}, 0))
-	assert.Equal(t, 100, getUserQuotaDB(t, userID))
+	assert.Equal(t, int64(100), getUserQuotaDB(t, userID))
 
 	// 幂等：重复清偿同一笔 → ErrDebtNotFound（已 paid）
 	err = RepayTaskBillingDebt(userID, debt.ID, RepayDebtOptions{}, 0)
 	require.ErrorIs(t, err, ErrDebtNotFound, "重复清偿必须幂等拒绝")
-	assert.Equal(t, 100, getUserQuotaDB(t, userID), "重复清偿不得再次扣款")
+	assert.Equal(t, int64(100), getUserQuotaDB(t, userID), "重复清偿不得再次扣款")
 }
 
 func TestRepayTaskBillingDebt_OtherDebtsKeepFrozen(t *testing.T) {
@@ -410,20 +410,20 @@ func TestUnfreezeNeverTouchesAdminDisabledStatus(t *testing.T) {
 	assert.Equal(t, common.UserStatusDisabled, user.Status, "管理员手工禁用状态绝不能被清偿流程误解除")
 }
 
-func getUserQuotaDB(t *testing.T, id int) int {
+func getUserQuotaDB(t *testing.T, id int) int64 {
 	t.Helper()
 	var user User
 	require.NoError(t, DB.Select("quota").Where("id = ?", id).First(&user).Error)
 	return user.Quota
 }
 
-func seedUsedQuotaForUser(t *testing.T, userID, amount int) {
+func seedUsedQuotaForUser(t *testing.T, userID int, amount int64) {
 	t.Helper()
 	require.NoError(t, DB.Model(&User{}).Where("id = ?", userID).Update("used_quota", amount).Error)
 }
 
 // seedDebtTask 创建欠款清偿所需的关联任务行（新清偿语义要求任务存在）。
-func seedDebtTask(t *testing.T, userID int, taskID string, preConsumed int) {
+func seedDebtTask(t *testing.T, userID int, taskID string, preConsumed int64) {
 	t.Helper()
 	task := &Task{
 		TaskID:    taskID,
@@ -458,17 +458,17 @@ func TestGuardedSettle_TransactionRollback(t *testing.T) {
 
 	res := ApplyTaskQuotaDeltaGuarded(task, actual-preConsumed, false, TaskQuotaDeltaOptions{GuardPositiveDelta: true})
 	require.Equal(t, TaskQuotaDeltaDBError, res)
-	assert.Equal(t, quota, getUserQuotaDB(t, userID), "事务回滚：资金不变")
-	assert.Equal(t, preConsumed, task.Quota, "事务回滚：内存任务额度不被污染")
+	assert.Equal(t, int64(quota), getUserQuotaDB(t, userID), "事务回滚：资金不变")
+	assert.Equal(t, int64(preConsumed), task.Quota, "事务回滚：内存任务额度不被污染")
 	var reloaded Task
 	require.NoError(t, DB.First(&reloaded, task.ID).Error)
-	assert.Equal(t, preConsumed, reloaded.Quota, "事务回滚：任务额度不变")
+	assert.Equal(t, int64(preConsumed), reloaded.Quota, "事务回滚：任务额度不变")
 
 	// 移除注入后可重试成功
 	require.NoError(t, DB.Exec("DROP TRIGGER IF EXISTS fail_guard_task_quota").Error)
 	res = ApplyTaskQuotaDeltaGuarded(task, actual-preConsumed, false, TaskQuotaDeltaOptions{GuardPositiveDelta: true})
 	require.Equal(t, TaskQuotaDeltaSuccess, res)
-	assert.Equal(t, quota-(actual-preConsumed), getUserQuotaDB(t, userID))
+	assert.Equal(t, int64(quota-(actual-preConsumed)), getUserQuotaDB(t, userID))
 }
 
 // TestCreateDebtAndFreeze_Rollback 欠款+冻结在同一事务：任一步失败整体回滚。
@@ -505,7 +505,7 @@ func TestCreateDebtAndFreeze_Rollback(t *testing.T) {
 // ===========================================================================
 
 // seedPendingDebtWithAlert 创建一条未清且告警未发送的欠款记录。
-func seedPendingDebtWithAlert(t *testing.T, userID int, taskID string, delta int) *TaskBillingDebt {
+func seedPendingDebtWithAlert(t *testing.T, userID int, taskID string, delta int64) *TaskBillingDebt {
 	t.Helper()
 	debt := &TaskBillingDebt{
 		UserId:           userID,

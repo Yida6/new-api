@@ -54,7 +54,7 @@ type Task struct {
 	UserId     int                   `json:"user_id" gorm:"index"`
 	Group      string                `json:"group" gorm:"type:varchar(50)"` // 修正计费用
 	ChannelId  int                   `json:"channel_id" gorm:"index"`
-	Quota      int                   `json:"quota"`
+	Quota      int64                 `json:"quota" gorm:"type:bigint;default:0"`
 	Action     string                `json:"action" gorm:"type:varchar(40);index"` // 任务类型, song, lyrics, description-mode
 	Status     TaskStatus            `json:"status" gorm:"type:varchar(20);index"` // 任务状态
 	FailReason string                `json:"fail_reason"`
@@ -69,7 +69,7 @@ type Task struct {
 	// 对外暴露（管理端任务查询可见）：pending>0 且 TokenId<=0 的异常记录
 	// 由管理员人工处理（见 CompensatePendingTokenDeltas 问题四注释），
 	// 不得静默清零。
-	TokenDeltaPending int        `json:"token_delta_pending" gorm:"column:token_delta_pending;default:0;index"`
+	TokenDeltaPending int64      `json:"token_delta_pending" gorm:"column:token_delta_pending;type:bigint;default:0;index"`
 	SubmitTime        int64      `json:"submit_time" gorm:"index"`
 	StartTime         int64      `json:"start_time" gorm:"index"`
 	FinishTime        int64      `json:"finish_time" gorm:"index"`

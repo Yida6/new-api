@@ -20,6 +20,7 @@ import dayjs from '@/lib/dayjs'
 
 import {
   formatCurrencyFromUSD,
+  formatLocalCurrencyAmount,
   formatQuotaWithCurrency,
   getCurrencyDisplay,
   getCurrencyFractionDigits,
@@ -143,6 +144,47 @@ export function getEditableQuotaStep(): number {
   }
 
   return 10 ** -getCurrencyFractionDigits(0)
+}
+
+/**
+ * Convert the backend business ceiling for a single quota amount (internal
+ * quota units, e.g. common.MaxTokenQuota = 1e15) to the amount the user can
+ * actually type in the current display mode.
+ *
+ * - USD/CNY/CUSTOM: internal units → USD → display currency (exchange rate)
+ * - TOKENS: the raw internal-unit ceiling (maxQuota itself)
+ */
+export function maxQuotaToDisplayAmount(): number {
+  const { config, meta } = getCurrencyDisplay()
+  return quotaUnitsToDisplayAmount(config.maxQuota, config.quotaPerUnit, meta)
+}
+
+/**
+ * Whether the given display-mode input amount exceeds the backend business
+ * ceiling. `parseQuotaFromDollars` mirrors the backend conversion, so the
+ * comparison happens in internal quota units and stays exact for any amount
+ * below 2^53 (all realistic inputs).
+ */
+export function isQuotaInputAboveMax(amount: number): boolean {
+  if (!Number.isFinite(amount) || amount <= 0) return false
+  const { config } = getCurrencyDisplay()
+  return parseQuotaFromDollars(amount) > config.maxQuota
+}
+
+/**
+ * Human-readable ceiling label for quota inputs, e.g. "最大可设置 2,000,000,000 USD".
+ * Uses the display currency symbol/unit of the current mode.
+ */
+export function formatMaxQuotaHint(): string {
+  const { meta } = getCurrencyDisplay()
+  const maxAmount = maxQuotaToDisplayAmount()
+  if (meta.kind === 'tokens') {
+    return new Intl.NumberFormat(undefined, {
+      maximumFractionDigits: 0,
+    }).format(maxAmount)
+  }
+  // maxAmount 已经是当前展示币种的金额（内部额度 → USD → 汇率换算）
+  return formatLocalCurrencyAmount(maxAmount)
 }
 
 // ============================================================================

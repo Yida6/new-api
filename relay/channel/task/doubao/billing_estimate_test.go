@@ -82,7 +82,7 @@ func TestEstimateSeedancePricing_Standard2Combos(t *testing.T) {
 
 			// 预扣 = baseQuota × durationSafety(官方token) × 表内最大单价比档（51/46）。
 			// 分辨率进入预扣：1080p/4k 的官方 token 面积大于 720p。
-			baseQuota := 100000
+			baseQuota := int64(100000)
 			preConsume, clamp := quotaFromSeedanceEstimate(baseQuota, est)
 			require.Nil(t, clamp, "常规组合不得触发额度饱和")
 			durSafety := seedanceTestDurationSafety(5, tc.resolution, tc.hasVideo)
@@ -264,7 +264,7 @@ func TestEstimateSeedancePricing_QuotaSaturationNoOverflow(t *testing.T) {
 	})
 	quota, clamp := quotaFromSeedanceEstimate(common.MaxQuota, est)
 	require.NotNil(t, clamp, "超长时长必须触发饱和，不允许静默溢出")
-	assert.GreaterOrEqual(t, quota, 0, "饱和后额度不得为负数")
+	assert.GreaterOrEqual(t, quota, int64(0), "饱和后额度不得为负数")
 }
 
 // ===========================================================================

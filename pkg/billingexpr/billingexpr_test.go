@@ -332,7 +332,7 @@ func TestZeroTokens(t *testing.T) {
 func TestQuotaRound(t *testing.T) {
 	tests := []struct {
 		in   float64
-		want int
+		want int64
 	}{
 		{0, 0},
 		{0.4, 0},
@@ -346,7 +346,7 @@ func TestQuotaRound(t *testing.T) {
 		{1e9 + 0.5, 1e9 + 1},
 		// Oversized expression results saturate at int32 (delegated to
 		// common.QuotaRound); full saturation coverage lives in common.
-		{3.6893488147419103e19, math.MaxInt32},
+		{3.6893488147419103e19, math.MaxInt64},
 	}
 	for _, tt := range tests {
 		got := billingexpr.QuotaRound(tt.in)

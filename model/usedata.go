@@ -22,14 +22,14 @@ type QuotaData struct {
 	NodeName  string `json:"node_name" gorm:"index;size:64;default:''"`
 	TokenUsed int    `json:"token_used" gorm:"default:0"`
 	Count     int    `json:"count" gorm:"default:0"`
-	Quota     int    `json:"quota" gorm:"default:0"`
+	Quota     int64  `json:"quota" gorm:"type:bigint;default:0"`
 }
 
 type QuotaDataLogParams struct {
 	UserID    int
 	Username  string
 	ModelName string
-	Quota     int
+	Quota     int64
 	CreatedAt int64
 	TokenUsed int
 	UseGroup  string

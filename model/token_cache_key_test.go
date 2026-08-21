@@ -105,7 +105,7 @@ func TestTokenCacheSync_DebtRepayUsesTxKey(t *testing.T) {
 
 	require.NoError(t, RepayTaskBillingDebt(user.Id, debt.ID, RepayDebtOptions{}, 100))
 	dbTok := getTokenFromDB(t, tok.Id)
-	assert.Equal(t, 10000-500, dbTok.RemainQuota)
+	assert.Equal(t, int64(10000-500), dbTok.RemainQuota)
 
 	// 提交后删除令牌行：清偿使用的也是事务内 key，缓存保持与 DB 一致
 	require.NoError(t, DB.Delete(&tok).Error)

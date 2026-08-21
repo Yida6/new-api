@@ -67,7 +67,7 @@ func (a *sunoFailurePollingAdaptor) ParseTaskResult([]byte) (*relaycommon.TaskIn
 	return nil, nil
 }
 
-func (a *sunoFailurePollingAdaptor) AdjustBillingOnComplete(_ *model.Task, _ *relaycommon.TaskInfo) int {
+func (a *sunoFailurePollingAdaptor) AdjustBillingOnComplete(_ *model.Task, _ *relaycommon.TaskInfo) int64 {
 	return 0
 }
 
@@ -116,7 +116,7 @@ func (a *taskPollingFetchAdaptor) ParseTaskResult([]byte) (*relaycommon.TaskInfo
 	return &relaycommon.TaskInfo{Status: model.TaskStatusInProgress}, nil
 }
 
-func (a *taskPollingFetchAdaptor) AdjustBillingOnComplete(_ *model.Task, _ *relaycommon.TaskInfo) int {
+func (a *taskPollingFetchAdaptor) AdjustBillingOnComplete(_ *model.Task, _ *relaycommon.TaskInfo) int64 {
 	return 0
 }
 
@@ -425,8 +425,8 @@ func TestUpdateSunoTasksStalePollsRefundExactlyOnce(t *testing.T) {
 	require.NoError(t, model.DB.First(&reloaded, task.ID).Error)
 	assert.EqualValues(t, model.TaskStatusFailure, reloaded.Status)
 	assert.Zero(t, reloaded.Quota)
-	assert.Equal(t, initialUserQuota+taskQuota, getUserQuota(t, userID))
-	assert.Equal(t, initialTokenQuota+taskQuota, getTokenRemainQuota(t, tokenID))
+	assert.Equal(t, int64(initialUserQuota+taskQuota), getUserQuota(t, userID))
+	assert.Equal(t, int64(initialTokenQuota+taskQuota), getTokenRemainQuota(t, tokenID))
 	assert.Equal(t, int64(1), countLogs(t))
 }
 
@@ -453,8 +453,8 @@ func TestRunTaskPollingOnceDoesNotRefundHistoricalFailedTask(t *testing.T) {
 	summary := RunTaskPollingOnce(context.Background(), nil)
 
 	assert.Zero(t, summary.UnfinishedTasks)
-	assert.Equal(t, initialQuota, getUserQuota(t, userID))
-	assert.Equal(t, taskQuota, getTaskQuota(t, task.ID))
+	assert.Equal(t, int64(initialQuota), getUserQuota(t, userID))
+	assert.Equal(t, int64(taskQuota), getTaskQuota(t, task.ID))
 	assert.Equal(t, int64(0), countLogs(t))
 }
 
@@ -500,7 +500,7 @@ func TestSweepTimedOutTasksHonorsRefundRolloutBoundary(t *testing.T) {
 	assert.Zero(t, reloadedModern.Quota)
 	assert.Contains(t, reloadedLegacy.FailReason, "旧系统遗留任务")
 	assert.Contains(t, reloadedModern.FailReason, "任务超时")
-	assert.Equal(t, initialQuota+modernTaskQuota, getUserQuota(t, userID))
+	assert.Equal(t, int64(initialQuota+modernTaskQuota), getUserQuota(t, userID))
 	assert.Equal(t, int64(1), countLogs(t))
 }
 
@@ -567,7 +567,7 @@ func TestSweepTimedOutTasks_RefundFailureKeepsConcurrencySlot(t *testing.T) {
 	require.NoError(t, model.DB.First(&reloaded, task.ID).Error)
 	assert.EqualValues(t, model.TaskStatusQueued, reloaded.Status, "退款失败应回退到非终态")
 	assert.False(t, reloaded.ConcurrencyReleased, "回退非终态后 ConcurrencyReleased 必须保持 false")
-	assert.Equal(t, preConsumed, reloaded.Quota)
+	assert.Equal(t, int64(preConsumed), reloaded.Quota)
 
 	// 补上累计消耗后再次 sweep：退款成功 + 终态确立 → 释放名额
 	seedUsedQuota(t, userID, 0, preConsumed)
@@ -638,7 +638,7 @@ func (failingRefundStubAdaptor) FetchTask(_ string, _ string, _ map[string]any, 
 func (failingRefundStubAdaptor) ParseTaskResult(body []byte) (*relaycommon.TaskInfo, error) {
 	return &relaycommon.TaskInfo{Status: "FAILURE", Reason: "boom"}, nil
 }
-func (failingRefundStubAdaptor) AdjustBillingOnComplete(_ *model.Task, _ *relaycommon.TaskInfo) int {
+func (failingRefundStubAdaptor) AdjustBillingOnComplete(_ *model.Task, _ *relaycommon.TaskInfo) int64 {
 	return 0
 }
 
@@ -687,7 +687,7 @@ func TestUpdateVideoSingleTask_RefundFailureKeepsConcurrencySlot(t *testing.T) {
 	require.NoError(t, model.DB.First(&reloaded, task.ID).Error)
 	assert.EqualValues(t, model.TaskStatusQueued, reloaded.Status, "退款失败应回退到非终态")
 	assert.False(t, reloaded.ConcurrencyReleased, "回退非终态后 ConcurrencyReleased 必须保持 false")
-	assert.Equal(t, preConsumed, reloaded.Quota)
+	assert.Equal(t, int64(preConsumed), reloaded.Quota)
 
 	// 补上累计消耗后再次轮询：退款成功 + 终态确立 → 释放名额
 	seedUsedQuota(t, userID, channelID, preConsumed)

@@ -307,9 +307,10 @@ func AddToken(c *gin.Context) {
 			common.ApiErrorI18n(c, i18n.MsgTokenQuotaNegative)
 			return
 		}
-		maxQuotaValue := common.QuotaFromFloat(1000000000 * common.QuotaPerUnit)
-		if token.RemainQuota > maxQuotaValue {
-			common.ApiErrorI18n(c, i18n.MsgTokenQuotaExceedMax, map[string]any{"Max": maxQuotaValue})
+		// 业务上限：common.MaxTokenQuota（int64，默认 1e15），由配置集中定义、
+		// 可被 int64 表示，不再使用被 int32 饱和压制的伪上限。
+		if token.RemainQuota > common.MaxTokenQuota {
+			common.ApiErrorI18n(c, i18n.MsgTokenQuotaExceedMax, map[string]any{"Max": common.MaxTokenQuota})
 			return
 		}
 	}
@@ -405,9 +406,9 @@ func UpdateToken(c *gin.Context) {
 			common.ApiErrorI18n(c, i18n.MsgTokenQuotaNegative)
 			return
 		}
-		maxQuotaValue := common.QuotaFromFloat(1000000000 * common.QuotaPerUnit)
-		if token.RemainQuota > maxQuotaValue {
-			common.ApiErrorI18n(c, i18n.MsgTokenQuotaExceedMax, map[string]any{"Max": maxQuotaValue})
+		// 业务上限：common.MaxTokenQuota（int64，默认 1e15），与 AddToken 同一口径。
+		if token.RemainQuota > common.MaxTokenQuota {
+			common.ApiErrorI18n(c, i18n.MsgTokenQuotaExceedMax, map[string]any{"Max": common.MaxTokenQuota})
 			return
 		}
 	}

@@ -19,7 +19,11 @@ For commercial licensing, please contact support@quantumnous.com
 import type { TFunction } from 'i18next'
 import { z } from 'zod'
 
-import { parseQuotaFromDollars, quotaUnitsToDollars } from '@/lib/format'
+import {
+  isQuotaInputAboveMax,
+  parseQuotaFromDollars,
+  quotaUnitsToDollars,
+} from '@/lib/format'
 
 import { DEFAULT_GROUP } from '../constants'
 import type { ApiKey, ApiKeyFormData } from '../types'
@@ -92,6 +96,14 @@ export function getApiKeyFormSchema(t: TFunction, maxAutoGroups = 5) {
           code: 'custom',
           path: ['remain_quota_dollars'],
           message: t('Quota must be zero or greater'),
+        })
+      } else if (isQuotaInputAboveMax(data.remain_quota_dollars)) {
+        // 后端业务上限（common.MaxTokenQuota，int64）换算到当前展示币种后的
+        // 最大可输入值；超过则在提交前拒绝，避免落入"额度值超出有效范围"。
+        ctx.addIssue({
+          code: 'custom',
+          path: ['remain_quota_dollars'],
+          message: t('Quota exceeds the maximum allowed value'),
         })
       }
     })

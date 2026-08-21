@@ -46,7 +46,7 @@ func TestRecalcQuotaFromRatiosIgnoresInvalidMultipliers(t *testing.T) {
 	})
 
 	require.True(t, ok)
-	assert.Equal(t, 150, quota)
+	assert.Equal(t, int64(150), quota)
 	assert.True(t, info.PriceData.HasOtherRatio("duration"))
 }
 
@@ -66,6 +66,6 @@ func TestRecalcQuotaFromRatiosRejectsAllInvalidAdjustedRatios(t *testing.T) {
 	})
 
 	require.False(t, ok)
-	assert.Equal(t, 0, quota)
+	assert.Equal(t, int64(0), quota)
 	assert.True(t, info.PriceData.HasOtherRatio("duration"))
 }

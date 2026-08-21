@@ -31,7 +31,7 @@ var finiteTokenTaskSeq int64
 // seedFiniteTokenTask 创建有限 Token 结算任务（不做额外预扣——预扣由
 // TryReserveTokenQuota 在测试中显式执行，避免与 seedTokenSettleTask 的
 // fixture 预扣重复）。
-func seedFiniteTokenTask(t *testing.T, userID, tokenID, preConsumed int) *Task {
+func seedFiniteTokenTask(t *testing.T, userID, tokenID int, preConsumed int64) *Task {
 	t.Helper()
 	seq := atomic.AddInt64(&finiteTokenTaskSeq, 1)
 	task := &Task{
@@ -78,8 +78,8 @@ func TestFiniteToken_ReserveThenPositiveSettleNoNegative(t *testing.T) {
 	reserved, err := TryReserveTokenQuota(tok.Id, tok.Key, 400, false)
 	require.NoError(t, err)
 	require.True(t, reserved)
-	assert.Equal(t, 600, getTokenFromDB(t, tok.Id).RemainQuota, "预扣后 DB 必须立即落账（批量模式也直写带守卫）")
-	assert.Equal(t, 400, getTokenFromDB(t, tok.Id).UsedQuota)
+	assert.Equal(t, int64(600), getTokenFromDB(t, tok.Id).RemainQuota, "预扣后 DB 必须立即落账（批量模式也直写带守卫）")
+	assert.Equal(t, int64(400), getTokenFromDB(t, tok.Id).UsedQuota)
 
 	task := seedFiniteTokenTask(t, user.Id, tok.Id, 400)
 	res, tokenRes := ApplySeedanceSettle(task, 500, false, TaskQuotaDeltaOptions{GuardPositiveDelta: true})
@@ -87,11 +87,11 @@ func TestFiniteToken_ReserveThenPositiveSettleNoNegative(t *testing.T) {
 	require.Equal(t, TokenAdjustOK, tokenRes)
 
 	after := getTokenFromDB(t, tok.Id)
-	assert.Equal(t, 100, after.RemainQuota, "结算补扣基于已直写的余额")
-	assert.Equal(t, 900, after.UsedQuota)
-	assert.GreaterOrEqual(t, after.RemainQuota, 0, "有限 Token 余额绝不为负")
-	assert.GreaterOrEqual(t, after.UsedQuota, 0, "有限 Token used 绝不为负")
-	assert.Equal(t, 1000, after.RemainQuota+after.UsedQuota, "remain+used 恒定")
+	assert.Equal(t, int64(100), after.RemainQuota, "结算补扣基于已直写的余额")
+	assert.Equal(t, int64(900), after.UsedQuota)
+	assert.GreaterOrEqual(t, int64(after.RemainQuota), int64(0), "有限 Token 余额绝不为负")
+	assert.GreaterOrEqual(t, int64(after.UsedQuota), int64(0), "有限 Token used 绝不为负")
+	assert.Equal(t, int64(1000), after.RemainQuota+after.UsedQuota, "remain+used 恒定")
 	assert.Equal(t, 0, tokenPending(t, task.ID), "余额充足时不得进入 pending")
 }
 
@@ -111,7 +111,7 @@ func TestFiniteToken_BatchModeRefundBeforeFlush(t *testing.T) {
 	reserved, err := TryReserveTokenQuota(tok.Id, tok.Key, 400, false)
 	require.NoError(t, err)
 	require.True(t, reserved)
-	assert.Equal(t, 600, getTokenFromDB(t, tok.Id).RemainQuota)
+	assert.Equal(t, int64(600), getTokenFromDB(t, tok.Id).RemainQuota)
 
 	task := seedFiniteTokenTask(t, user.Id, tok.Id, 400)
 	res, tokenRes := ApplySeedanceSettle(task, -300, false, TaskQuotaDeltaOptions{})
@@ -119,10 +119,10 @@ func TestFiniteToken_BatchModeRefundBeforeFlush(t *testing.T) {
 	require.Equal(t, TokenAdjustOK, tokenRes)
 
 	after := getTokenFromDB(t, tok.Id)
-	assert.Equal(t, 900, after.RemainQuota, "退款后 remain 加回 abs(delta)")
-	assert.Equal(t, 100, after.UsedQuota, "退款后 used 冲减 abs(delta)")
-	assert.GreaterOrEqual(t, after.UsedQuota, 0, "used 绝不为负")
-	assert.Equal(t, 1000, after.RemainQuota+after.UsedQuota, "remain+used 恒定")
+	assert.Equal(t, int64(900), after.RemainQuota, "退款后 remain 加回 abs(delta)")
+	assert.Equal(t, int64(100), after.UsedQuota, "退款后 used 冲减 abs(delta)")
+	assert.GreaterOrEqual(t, int64(after.UsedQuota), int64(0), "used 绝不为负")
+	assert.Equal(t, int64(1000), after.RemainQuota+after.UsedQuota, "remain+used 恒定")
 	assert.Equal(t, 0, tokenPending(t, task.ID))
 }
 
@@ -143,7 +143,7 @@ func TestFiniteToken_BatchModeDebtRepayNotApprovedOnStaleBalance(t *testing.T) {
 	reserved, err := TryReserveTokenQuota(tok.Id, tok.Key, 400, false)
 	require.NoError(t, err)
 	require.True(t, reserved)
-	assert.Equal(t, 600, getTokenFromDB(t, tok.Id).RemainQuota, "预扣必须已直写落账（否则清偿基于旧余额错误批准）")
+	assert.Equal(t, int64(600), getTokenFromDB(t, tok.Id).RemainQuota, "预扣必须已直写落账（否则清偿基于旧余额错误批准）")
 
 	_, _, _, err = CreateDebtAndFreeze(DebtInput{
 		UserId: user.Id, TaskId: task.TaskID, PreConsumedQuota: 400, ActualQuota: 900, DeltaQuota: 500,
@@ -155,11 +155,11 @@ func TestFiniteToken_BatchModeDebtRepayNotApprovedOnStaleBalance(t *testing.T) {
 
 	require.NoError(t, RepayTaskBillingDebt(user.Id, debt.ID, RepayDebtOptions{}, 0))
 	after := getTokenFromDB(t, tok.Id)
-	assert.Equal(t, 100, after.RemainQuota, "清偿基于已直写的余额扣减（旧余额 1000 会错误批准成 500）")
-	assert.Equal(t, 900, after.UsedQuota)
-	assert.GreaterOrEqual(t, after.RemainQuota, 0, "有限 Token 余额绝不为负")
-	assert.Equal(t, 1000, after.RemainQuota+after.UsedQuota, "remain+used 恒定")
-	assert.Equal(t, 2000-500, getUserQuotaFromDB(t, user.Id), "钱包收款差额")
+	assert.Equal(t, int64(100), after.RemainQuota, "清偿基于已直写的余额扣减（旧余额 1000 会错误批准成 500）")
+	assert.Equal(t, int64(900), after.UsedQuota)
+	assert.GreaterOrEqual(t, int64(after.RemainQuota), int64(0), "有限 Token 余额绝不为负")
+	assert.Equal(t, int64(1000), after.RemainQuota+after.UsedQuota, "remain+used 恒定")
+	assert.Equal(t, int64(2000-500), getUserQuotaFromDB(t, user.Id), "钱包收款差额")
 }
 
 // 场景 4：Redis 缓存余额比数据库余额偏高时（补扣已提交但缓存未同步），
@@ -183,10 +183,10 @@ func TestFiniteToken_DBGuardRejectsStaleCacheAndCompensates(t *testing.T) {
 	require.NoError(t, err, "守卫拒绝应视为额度不足而非数据库错误")
 	assert.False(t, reserved, "缓存按旧值授权但 DB 守卫必须拒绝")
 
-	assert.Equal(t, 50, getTokenFromDB(t, tok.Id).RemainQuota, "DB 余额不得被扣成负数")
+	assert.Equal(t, int64(50), getTokenFromDB(t, tok.Id).RemainQuota, "DB 余额不得被扣成负数")
 	cached, err := cacheGetTokenByKey(tok.Key)
 	require.NoError(t, err)
-	assert.Equal(t, 100, cached.RemainQuota, "授权失败后缓存必须补偿回原值")
+	assert.Equal(t, int64(100), cached.RemainQuota, "授权失败后缓存必须补偿回原值")
 	assert.Zero(t, cached.UsedQuota)
 }
 
@@ -202,18 +202,18 @@ func TestFiniteToken_InvariantAcrossBatchFlush(t *testing.T) {
 	tok := createReserveTestToken(t, 1000)
 	require.NoError(t, DB.Model(&Token{}).Where("id = ?", tok.Id).Update("user_id", user.Id).Error)
 
-	for _, q := range []int{200, 150, 250} {
+	for _, q := range []int64{200, 150, 250} {
 		reserved, err := TryReserveTokenQuota(tok.Id, tok.Key, q, false)
 		require.NoError(t, err)
 		require.True(t, reserved)
 	}
 
 	mid := getTokenFromDB(t, tok.Id)
-	assert.Equal(t, 400, mid.RemainQuota)
-	assert.Equal(t, 600, mid.UsedQuota)
-	assert.GreaterOrEqual(t, mid.RemainQuota, 0)
-	assert.GreaterOrEqual(t, mid.UsedQuota, 0)
-	assert.Equal(t, 1000, mid.RemainQuota+mid.UsedQuota, "批量刷新前 remain+used 恒定")
+	assert.Equal(t, int64(400), mid.RemainQuota)
+	assert.Equal(t, int64(600), mid.UsedQuota)
+	assert.GreaterOrEqual(t, int64(mid.RemainQuota), int64(0))
+	assert.GreaterOrEqual(t, int64(mid.UsedQuota), int64(0))
+	assert.Equal(t, int64(1000), mid.RemainQuota+mid.UsedQuota, "批量刷新前 remain+used 恒定")
 
 	// 有限 Token 扣减不得进入无守卫批量队列（批量队列只承载加方向增量）
 	batchUpdateLocks[BatchUpdateTypeTokenQuota].Lock()
@@ -223,11 +223,11 @@ func TestFiniteToken_InvariantAcrossBatchFlush(t *testing.T) {
 
 	batchUpdate()
 	after := getTokenFromDB(t, tok.Id)
-	assert.Equal(t, 400, after.RemainQuota, "批量刷新不改变已直写的余额")
-	assert.Equal(t, 600, after.UsedQuota)
-	assert.GreaterOrEqual(t, after.RemainQuota, 0)
-	assert.GreaterOrEqual(t, after.UsedQuota, 0)
-	assert.Equal(t, 1000, after.RemainQuota+after.UsedQuota, "批量刷新后 remain+used 恒定")
+	assert.Equal(t, int64(400), after.RemainQuota, "批量刷新不改变已直写的余额")
+	assert.Equal(t, int64(600), after.UsedQuota)
+	assert.GreaterOrEqual(t, int64(after.RemainQuota), int64(0))
+	assert.GreaterOrEqual(t, int64(after.UsedQuota), int64(0))
+	assert.Equal(t, int64(1000), after.RemainQuota+after.UsedQuota, "批量刷新后 remain+used 恒定")
 
 	// 加方向（退款/充值）仍走批量队列（不影响守卫路径）
 	require.NoError(t, persistTokenQuotaDelta(tok.Id, +100))
@@ -235,5 +235,5 @@ func TestFiniteToken_InvariantAcrossBatchFlush(t *testing.T) {
 	enqueuedVal, ok := batchUpdateStores[BatchUpdateTypeTokenQuota][tok.Id]
 	batchUpdateLocks[BatchUpdateTypeTokenQuota].Unlock()
 	assert.True(t, ok, "加方向应进入批量队列")
-	assert.Equal(t, 100, enqueuedVal)
+	assert.Equal(t, int64(100), enqueuedVal)
 }

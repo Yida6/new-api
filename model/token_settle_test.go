@@ -24,7 +24,7 @@ var tokenSettleTaskSeq int64
 // seedTokenSettleTask 创建 Seedance 结算任务（带 Token），并模拟提交时的
 // Token 预扣（remain -= preConsumed、used += preConsumed），使退款方向的
 // used_quota >= abs(delta) 守卫在测试中与生产路径一致。
-func seedTokenSettleTask(t *testing.T, userID, tokenID, channelID, preConsumed int) *Task {
+func seedTokenSettleTask(t *testing.T, userID, tokenID, channelID int, preConsumed int64) *Task {
 	t.Helper()
 	seq := atomic.AddInt64(&tokenSettleTaskSeq, 1)
 	task := &Task{
@@ -75,9 +75,9 @@ func TestTokenSettle_RefundKeepsRemainUsedInvariant(t *testing.T) {
 	task := seedTokenSettleTask(t, user.Id, tok.Id, 0, preConsumed)
 	// 提交后：remain = 95000、used = 5000（不变量：remain+used = 100000）
 	before := getTokenFromDB(t, tok.Id)
-	assert.Equal(t, 100000-preConsumed, before.RemainQuota)
-	assert.Equal(t, preConsumed, before.UsedQuota)
-	assert.Equal(t, 100000, before.RemainQuota+before.UsedQuota, "扣减后 remain+used 不变量")
+	assert.Equal(t, int64(100000-preConsumed), before.RemainQuota)
+	assert.Equal(t, int64(preConsumed), before.UsedQuota)
+	assert.Equal(t, int64(100000), before.RemainQuota+before.UsedQuota, "扣减后 remain+used 不变量")
 
 	// 结算退款 delta = -4000：remain 加回、used 冲减，总和不变
 	res, tokenRes := ApplySeedanceSettle(task, -refund, false, TaskQuotaDeltaOptions{})
@@ -85,12 +85,12 @@ func TestTokenSettle_RefundKeepsRemainUsedInvariant(t *testing.T) {
 	require.Equal(t, TokenAdjustOK, tokenRes)
 
 	after := getTokenFromDB(t, tok.Id)
-	assert.Equal(t, 100000-preConsumed+refund, after.RemainQuota, "remain 加回 abs(delta)")
-	assert.Equal(t, preConsumed-refund, after.UsedQuota, "used 冲减 abs(delta)（绝不增加）")
-	assert.Equal(t, 100000, after.RemainQuota+after.UsedQuota, "退款后 remain+used 不变量保持不变")
+	assert.Equal(t, int64(100000-preConsumed+refund), after.RemainQuota, "remain 加回 abs(delta)")
+	assert.Equal(t, int64(preConsumed-refund), after.UsedQuota, "used 冲减 abs(delta)（绝不增加）")
+	assert.Equal(t, int64(100000), after.RemainQuota+after.UsedQuota, "退款后 remain+used 不变量保持不变")
 	// 钱包退款 + 任务额度收敛
-	assert.Equal(t, 100000+refund, getUserQuotaFromDB(t, user.Id), "钱包加回退款额")
-	assert.Equal(t, preConsumed-refund, task.Quota, "任务额度收敛到实际费用")
+	assert.Equal(t, int64(100000+refund), getUserQuotaFromDB(t, user.Id), "钱包加回退款额")
+	assert.Equal(t, int64(preConsumed-refund), task.Quota, "任务额度收敛到实际费用")
 	assert.Equal(t, 0, tokenPending(t, task.ID), "退款成功不得产生 pending")
 }
 
@@ -112,10 +112,10 @@ func TestTokenSettle_RefundGuardNeverNegativeUsed(t *testing.T) {
 	res, _ := ApplySeedanceSettle(task, -800, false, TaskQuotaDeltaOptions{})
 	require.Equal(t, TaskQuotaDeltaDBError, res, "used_quota 不足必须回滚为可重试错误")
 	reloaded := getTokenFromDB(t, tok.Id)
-	assert.GreaterOrEqual(t, reloaded.UsedQuota, 0, "used_quota 绝不减成负数")
-	assert.Equal(t, 100, reloaded.UsedQuota, "回滚：Token 不变")
-	assert.Equal(t, 100000, getUserQuotaFromDB(t, user.Id), "回滚：钱包不退款")
-	assert.Equal(t, preConsumed, task.Quota, "回滚：任务额度不变")
+	assert.GreaterOrEqual(t, int64(reloaded.UsedQuota), int64(0), "used_quota 绝不减成负数")
+	assert.Equal(t, int64(100), reloaded.UsedQuota, "回滚：Token 不变")
+	assert.Equal(t, int64(100000), getUserQuotaFromDB(t, user.Id), "回滚：钱包不退款")
+	assert.Equal(t, int64(preConsumed), task.Quota, "回滚：任务额度不变")
 }
 
 // 问题五：无限 Token 语义——跳过余额守卫但记录 remain/used 变化（与
@@ -135,8 +135,8 @@ func TestTokenSettle_UnlimitedTokenNoPermanentPending(t *testing.T) {
 	res, tokenRes := ApplySeedanceSettle(task, 500, false, TaskQuotaDeltaOptions{GuardPositiveDelta: true})
 	require.Equal(t, TaskQuotaDeltaSuccess, res)
 	require.Equal(t, TokenAdjustOK, tokenRes, "unlimited Token 补扣必须成功")
-	assert.Equal(t, -1001-500, getTokenFromDB(t, tok.Id).RemainQuota)
-	assert.Equal(t, 1000+500, getTokenFromDB(t, tok.Id).UsedQuota)
+	assert.Equal(t, int64(-1001-500), getTokenFromDB(t, tok.Id).RemainQuota)
+	assert.Equal(t, int64(1000+500), getTokenFromDB(t, tok.Id).UsedQuota)
 	assert.Equal(t, 0, tokenPending(t, task.ID), "unlimited Token 不得因 remain < delta 永久进入 pending")
 
 	// 退款方向：无条件加回（不设 used_quota 下限，与 IncreaseTokenQuota 一致）。
@@ -148,9 +148,9 @@ func TestTokenSettle_UnlimitedTokenNoPermanentPending(t *testing.T) {
 	require.Equal(t, TaskQuotaDeltaSuccess, res)
 	require.Equal(t, TokenAdjustOK, tokenRes, "unlimited Token 退款必须成功")
 	reloaded := getTokenFromDB(t, tok.Id)
-	assert.Equal(t, -1501-1000+300, reloaded.RemainQuota, "退款 remain 加回")
-	assert.Equal(t, 1500+1000-300, reloaded.UsedQuota, "退款 used 冲减")
-	assert.Equal(t, -1, reloaded.RemainQuota+reloaded.UsedQuota, "remain+used 不变量（无限令牌初始 -1）")
+	assert.Equal(t, int64(-1501-1000+300), reloaded.RemainQuota, "退款 remain 加回")
+	assert.Equal(t, int64(1500+1000-300), reloaded.UsedQuota, "退款 used 冲减")
+	assert.Equal(t, int64(-1), reloaded.RemainQuota+reloaded.UsedQuota, "remain+used 不变量（无限令牌初始 -1）")
 	assert.Equal(t, 0, tokenPending(t, task2.ID))
 }
 
@@ -176,9 +176,9 @@ func TestTokenSettle_UnlimitedTokenDebtRepay(t *testing.T) {
 
 	require.NoError(t, RepayTaskBillingDebt(user.Id, debt.ID, RepayDebtOptions{}, 0), "unlimited Token 清偿必须成功")
 	reloaded := getTokenFromDB(t, tok.Id)
-	assert.Equal(t, -1-500, reloaded.RemainQuota, "unlimited Token 清偿无条件扣减")
-	assert.Equal(t, 500, reloaded.UsedQuota)
-	assert.Equal(t, 5000-500, getUserQuotaFromDB(t, user.Id), "钱包收款差额")
+	assert.Equal(t, int64(-1-500), reloaded.RemainQuota, "unlimited Token 清偿无条件扣减")
+	assert.Equal(t, int64(500), reloaded.UsedQuota)
+	assert.Equal(t, int64(5000-500), getUserQuotaFromDB(t, user.Id), "钱包收款差额")
 }
 
 // 问题五：unlimited Token 的补偿路径——即便出现 pending（数据异常），补偿
@@ -198,8 +198,8 @@ func TestTokenSettle_UnlimitedTokenCompensate(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, compensated, "unlimited Token 补偿必须成功")
 	reloaded := getTokenFromDB(t, tok.Id)
-	assert.Equal(t, -1001-500, reloaded.RemainQuota, "补偿无条件扣减")
-	assert.Equal(t, 1000+500, reloaded.UsedQuota)
+	assert.Equal(t, int64(-1001-500), reloaded.RemainQuota, "补偿无条件扣减")
+	assert.Equal(t, int64(1000+500), reloaded.UsedQuota)
 	assert.Equal(t, 0, tokenPending(t, task.ID), "补偿后标记清零")
 }
 
@@ -229,15 +229,15 @@ func TestCompensatePendingTokenDeltas_ConcurrentWorkersDeductOnce(t *testing.T) 
 
 	assert.Equal(t, 1, results[0]+results[1], "两个补偿 worker 并发只允许一个成功（合计补偿 1 条）")
 	reloaded := getTokenFromDB(t, tok.Id)
-	assert.Equal(t, 9000-500, reloaded.RemainQuota, "Token 只扣一次")
-	assert.Equal(t, 1000+500, reloaded.UsedQuota, "Token used 只加一次")
+	assert.Equal(t, int64(9000-500), reloaded.RemainQuota, "Token 只扣一次")
+	assert.Equal(t, int64(1000+500), reloaded.UsedQuota, "Token used 只加一次")
 	assert.Equal(t, 0, tokenPending(t, task.ID), "标记只清零一次")
 
 	// 再次补偿 no-op
 	compensated, err := CompensatePendingTokenDeltas(100)
 	require.NoError(t, err)
 	assert.Equal(t, 0, compensated)
-	assert.Equal(t, 9000-500, getTokenFromDB(t, tok.Id).RemainQuota, "重复补偿不重复扣款")
+	assert.Equal(t, int64(9000-500), getTokenFromDB(t, tok.Id).RemainQuota, "重复补偿不重复扣款")
 }
 
 // Token 余额不足时，资金提交与 pending 原子出现（同一事务）：
@@ -253,10 +253,10 @@ func TestTokenSettle_ShortPendingAtomicWithFunds(t *testing.T) {
 	res, tokenRes := ApplySeedanceSettle(task, 500, false, TaskQuotaDeltaOptions{GuardPositiveDelta: true})
 	require.Equal(t, TaskQuotaDeltaSuccess, res)
 	require.Equal(t, TokenAdjustFailed, tokenRes, "Token 不足必须标记 Failed（pending 已随资金事务落库）")
-	assert.Equal(t, 10000-500, getUserQuotaFromDB(t, user.Id), "资金已收")
-	assert.Equal(t, preConsumed+500, task.Quota, "任务额度收敛")
+	assert.Equal(t, int64(10000-500), getUserQuotaFromDB(t, user.Id), "资金已收")
+	assert.Equal(t, int64(preConsumed+500), task.Quota, "任务额度收敛")
 	assert.Equal(t, 500, tokenPending(t, task.ID), "pending 与资金同事务落库（无崩溃窗口）")
-	assert.Equal(t, 500, task.TokenDeltaPending, "内存 pending 已同步")
+	assert.Equal(t, int64(500), task.TokenDeltaPending, "内存 pending 已同步")
 }
 
 // 同一任务并发结算（生产语义：先 CAS 状态迁移，只有赢家结算）——
@@ -288,12 +288,12 @@ func TestTokenSettle_ConcurrentSameTaskChargesOnce(t *testing.T) {
 	wg.Wait()
 
 	// 只扣一次：钱包 -500、Token used 1000+500、任务额度 1500、无 pending
-	assert.Equal(t, 10000-500, getUserQuotaFromDB(t, user.Id), "钱包只扣一次")
+	assert.Equal(t, int64(10000-500), getUserQuotaFromDB(t, user.Id), "钱包只扣一次")
 	tokReloaded := getTokenFromDB(t, tok.Id)
-	assert.Equal(t, 100000, tokReloaded.RemainQuota+tokReloaded.UsedQuota, "remain+used 不变量")
-	assert.Equal(t, 1000+500, tokReloaded.UsedQuota, "Token 只扣一次")
+	assert.Equal(t, int64(100000), tokReloaded.RemainQuota+tokReloaded.UsedQuota, "remain+used 不变量")
+	assert.Equal(t, int64(1000+500), tokReloaded.UsedQuota, "Token 只扣一次")
 	require.NoError(t, DB.First(task, task.ID).Error)
-	assert.Equal(t, 1000+500, task.Quota, "任务额度收敛一次")
+	assert.Equal(t, int64(1000+500), task.Quota, "任务额度收敛一次")
 	assert.Equal(t, 0, tokenPending(t, task.ID), "无待补偿")
 }
 
@@ -322,7 +322,7 @@ func TestTokenSettle_CacheSyncedAfterCommit(t *testing.T) {
 	require.Equal(t, TaskQuotaDeltaSuccess, res)
 	require.Equal(t, TokenAdjustOK, tokenRes)
 	dbTok := getTokenFromDB(t, tok.Id)
-	assert.Equal(t, 98500, dbTok.RemainQuota, "DB 预扣+结算")
+	assert.Equal(t, int64(98500), dbTok.RemainQuota, "DB 预扣+结算")
 	cached, err := cacheGetTokenByKey(tok.Key)
 	require.NoError(t, err)
 	assert.Equal(t, dbTok.RemainQuota, cached.RemainQuota, "缓存 remain 与 DB 一致")
@@ -368,7 +368,7 @@ func TestTokenSettle_CacheSyncFailureInvalidatesNotRollsBack(t *testing.T) {
 
 	require.Equal(t, TaskQuotaDeltaSuccess, res, "资金结算不受缓存同步失败影响")
 	require.Equal(t, TokenAdjustOK, tokenRes)
-	assert.Equal(t, 100000-500, getUserQuotaFromDB(t, user.Id), "资金已提交（不回滚）")
+	assert.Equal(t, int64(100000-500), getUserQuotaFromDB(t, user.Id), "资金已提交（不回滚）")
 	exists, err := client.Exists(ctx, getTokenCacheKey(tok.Key)).Result()
 	require.NoError(t, err)
 	assert.Equal(t, int64(0), exists, "缓存同步失败必须删除 Token 缓存键，强制下次回源数据库")
@@ -404,7 +404,7 @@ func TestTokenSettle_DebtRepaySyncsTokenCache(t *testing.T) {
 
 	require.NoError(t, RepayTaskBillingDebt(user.Id, debt.ID, RepayDebtOptions{}, 100))
 	dbTok := getTokenFromDB(t, tok.Id)
-	assert.Equal(t, 10000-500, dbTok.RemainQuota, "清偿扣减 Token 差额")
+	assert.Equal(t, int64(10000-500), dbTok.RemainQuota, "清偿扣减 Token 差额")
 	cached, err := cacheGetTokenByKey(tok.Key)
 	require.NoError(t, err)
 	assert.Equal(t, dbTok.RemainQuota, cached.RemainQuota, "清偿后 Token 缓存与 DB 一致")
@@ -430,7 +430,7 @@ func TestTokenSettle_CompensateSyncsTokenCache(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, compensated)
 	dbTok := getTokenFromDB(t, tok.Id)
-	assert.Equal(t, 9000-500, dbTok.RemainQuota, "DB 补偿扣减")
+	assert.Equal(t, int64(9000-500), dbTok.RemainQuota, "DB 补偿扣减")
 	cached, err := cacheGetTokenByKey(tok.Key)
 	require.NoError(t, err)
 	assert.Equal(t, dbTok.RemainQuota, cached.RemainQuota, "补偿后 Token 缓存与 DB 一致")
@@ -500,5 +500,5 @@ func TestCompensatePending_ClearsOnlyOnSuccess(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, compensated)
 	assert.Equal(t, 0, getTokenDeltaPendingFromDB(t, task.ID), "真正扣减成功才清零")
-	assert.Equal(t, 9000-500, getTokenFromDB(t, tok.Id).RemainQuota, "Token 只扣一次")
+	assert.Equal(t, int64(9000-500), getTokenFromDB(t, tok.Id).RemainQuota, "Token 只扣一次")
 }

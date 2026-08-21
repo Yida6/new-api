@@ -20,7 +20,7 @@ type Midjourney struct {
 	Progress    string `json:"progress" gorm:"type:varchar(30);index"`
 	FailReason  string `json:"fail_reason"`
 	ChannelId   int    `json:"channel_id"`
-	Quota       int    `json:"quota"`
+	Quota       int64  `json:"quota" gorm:"type:bigint;default:0"`
 	Buttons     string `json:"buttons"`
 	Properties  string `json:"properties"`
 	// ConsumeLogRecorded 记录提交时是否写入了消费日志（受 LogConsumeEnabled 影响）。

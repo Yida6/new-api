@@ -691,7 +691,7 @@ func isFinitePositive(v float64) bool {
 // quotaFromSeedanceEstimate 把定价倍率 + 预扣缓冲安全地换算为预扣额度。
 // 输入为"基础配额 × 定价倍率 × 预扣缓冲"的浮点值，输出经饱和转换（禁止
 // 浮点截断成负数或整数溢出，见 common.QuotaFromFloatChecked）。
-func quotaFromSeedanceEstimate(baseQuota int, est SeedancePricingEstimate) (int, *common.QuotaClamp) {
+func quotaFromSeedanceEstimate(baseQuota int64, est SeedancePricingEstimate) (int64, *common.QuotaClamp) {
 	multiplier := est.PricingMultiplier * est.PreConsumeMultiplier
 	if !isFinitePositive(multiplier) {
 		multiplier = 1.0

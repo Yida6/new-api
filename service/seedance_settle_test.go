@@ -32,7 +32,7 @@ var seedanceTaskSeq int64
 // seedSeedanceTask 构造一个 Seedance 任务（doubao 平台，钱包计费，已预扣 quota）。
 // TaskID 使用原子递增序号，避免并发下 Windows 时钟精度导致碰撞（碰撞会让
 // 不同任务共用 task_id，破坏欠款按任务幂等的断言）。
-func seedSeedanceTask(t *testing.T, userID, channelID, tokenID, preConsumed int) *model.Task {
+func seedSeedanceTask(t *testing.T, userID, channelID, tokenID int, preConsumed int64) *model.Task {
 	t.Helper()
 	seq := atomic.AddInt64(&seedanceTaskSeq, 1)
 	task := &model.Task{
@@ -79,7 +79,7 @@ func seedSeedanceTask(t *testing.T, userID, channelID, tokenID, preConsumed int)
 	return task
 }
 
-func seedSeedanceUser(t *testing.T, id int, quota int, role int) {
+func seedSeedanceUser(t *testing.T, id int, quota int64, role int) {
 	t.Helper()
 	user := &model.User{Id: id, Username: fmt.Sprintf("seedance_%d", id), Quota: quota, Status: common.UserStatusEnabled, Role: role, AffCode: fmt.Sprintf("aff-seed-%d", id)}
 	require.NoError(t, model.DB.Create(user).Error)
@@ -116,13 +116,13 @@ func TestSeedanceSettle_OverchargedRefund(t *testing.T) {
 	require.Equal(t, SeedanceSettleSuccess, outcome)
 
 	// 问题一要求的全量断言：钱包、Token remain/used、任务额度、累计消费
-	assert.Equal(t, initQuota+(preConsumed-actual), getUserQuota(t, userID), "多预扣部分退款（钱包）")
+	assert.Equal(t, int64(initQuota+(preConsumed-actual)), getUserQuota(t, userID), "多预扣部分退款（钱包）")
 	// Token：fixture 预扣 5000 后 remain=95000/used=5000；退款 4000 → remain=99000/used=1000
-	assert.Equal(t, 100000-preConsumed+(preConsumed-actual), getTokenRemainQuota(t, tokenID), "Token remain 加回退款额")
-	assert.Equal(t, preConsumed-(preConsumed-actual), getTokenUsedQuota(t, tokenID), "Token used 冲减退款额")
-	assert.Equal(t, 100000, getTokenRemainQuota(t, tokenID)+getTokenUsedQuota(t, tokenID), "remain+used 资金不变量")
-	assert.Equal(t, actual, task.Quota, "任务额度收敛到实际费用")
-	assert.Equal(t, actual, getUserUsedQuota(t, userID), "用户累计消耗冲减到实际费用")
+	assert.Equal(t, int64(100000-preConsumed+(preConsumed-actual)), getTokenRemainQuota(t, tokenID), "Token remain 加回退款额")
+	assert.Equal(t, int64(preConsumed-(preConsumed-actual)), getTokenUsedQuota(t, tokenID), "Token used 冲减退款额")
+	assert.Equal(t, int64(100000), getTokenRemainQuota(t, tokenID)+getTokenUsedQuota(t, tokenID), "remain+used 资金不变量")
+	assert.Equal(t, int64(actual), task.Quota, "任务额度收敛到实际费用")
+	assert.Equal(t, int64(actual), getUserUsedQuota(t, userID), "用户累计消耗冲减到实际费用")
 	assert.EqualValues(t, actual, getChannelUsedQuota(t, channelID), "渠道累计消耗冲减到实际费用")
 	assert.Equal(t, int64(0), getDebtCount(t, task.TaskID), "退款场景不得产生欠款")
 	assert.False(t, isUserDebtFrozen(t, userID), "退款场景不得冻结")
@@ -147,11 +147,11 @@ func TestSeedanceSettle_SubscriptionRefundTokenInvariant(t *testing.T) {
 	adaptor := &mockAdaptor{adjustReturn: 1000}
 	require.Equal(t, SeedanceSettleSuccess, SettleSeedanceTaskBilling(ctx, adaptor, task, &relaycommon.TaskInfo{Status: model.TaskStatusSuccess}))
 	assert.Equal(t, int64(5000-2000), getSubscriptionUsed(t, subID), "订阅已用量冲减退款额")
-	assert.Equal(t, 100000-3000+2000, getTokenRemainQuota(t, tokenID), "Token remain 加回")
-	assert.Equal(t, 3000-2000, getTokenUsedQuota(t, tokenID), "Token used 冲减")
-	assert.Equal(t, 100000, getTokenRemainQuota(t, tokenID)+getTokenUsedQuota(t, tokenID), "remain+used 不变量")
-	assert.Equal(t, 1000, task.Quota, "任务额度收敛")
-	assert.Equal(t, 1000, getUserUsedQuota(t, userID), "用户累计消耗冲减")
+	assert.Equal(t, int64(100000-3000+2000), getTokenRemainQuota(t, tokenID), "Token remain 加回")
+	assert.Equal(t, int64(3000-2000), getTokenUsedQuota(t, tokenID), "Token used 冲减")
+	assert.Equal(t, int64(100000), getTokenRemainQuota(t, tokenID)+getTokenUsedQuota(t, tokenID), "remain+used 不变量")
+	assert.Equal(t, int64(1000), task.Quota, "任务额度收敛")
+	assert.Equal(t, int64(1000), getUserUsedQuota(t, userID), "用户累计消耗冲减")
 	assert.Equal(t, int64(0), getDebtCount(t, task.TaskID))
 }
 
@@ -170,8 +170,8 @@ func TestSeedanceSettle_ExactBalance(t *testing.T) {
 	adaptor := &mockAdaptor{adjustReturn: actual}
 	outcome := SettleSeedanceTaskBilling(ctx, adaptor, task, &relaycommon.TaskInfo{Status: model.TaskStatusSuccess})
 	require.Equal(t, SeedanceSettleSuccess, outcome)
-	assert.Equal(t, 0, getUserQuota(t, userID), "余额恰好够差额时余额为 0")
-	assert.Equal(t, actual, task.Quota)
+	assert.Equal(t, int64(0), getUserQuota(t, userID), "余额恰好够差额时余额为 0")
+	assert.Equal(t, int64(actual), task.Quota)
 	assert.Equal(t, int64(0), getDebtCount(t, task.TaskID))
 }
 
@@ -190,18 +190,18 @@ func TestSeedanceSettle_ShortByOneCreatesDebtAndFreeze(t *testing.T) {
 	outcome := SettleSeedanceTaskBilling(ctx, adaptor, task, &relaycommon.TaskInfo{Status: model.TaskStatusSuccess})
 	require.Equal(t, SeedanceSettleDebtCreated, outcome, "余额不足必须进入欠款闭环")
 
-	assert.Equal(t, balance, getUserQuota(t, userID), "拒绝补扣时余额不变")
-	assert.GreaterOrEqual(t, getUserQuota(t, userID), 0, "余额永不为负")
-	assert.Equal(t, preConsumed, task.Quota, "已预扣金额保留（不错误退款）")
+	assert.Equal(t, int64(balance), getUserQuota(t, userID), "拒绝补扣时余额不变")
+	assert.GreaterOrEqual(t, getUserQuota(t, userID), int64(0), "余额永不为负")
+	assert.Equal(t, int64(preConsumed), task.Quota, "已预扣金额保留（不错误退款）")
 	assert.Equal(t, int64(1), getDebtCount(t, task.TaskID), "只生成一条欠款")
 	assert.True(t, isUserDebtFrozen(t, userID), "欠款用户必须冻结")
 
 	debt, err := model.GetTaskBillingDebtByTaskId(task.TaskID)
 	require.NoError(t, err)
 	assert.Equal(t, model.DebtStatusPending, debt.Status)
-	assert.Equal(t, preConsumed, debt.PreConsumedQuota)
-	assert.Equal(t, actual, debt.ActualQuota)
-	assert.Equal(t, actual-preConsumed, debt.DeltaQuota)
+	assert.Equal(t, int64(preConsumed), debt.PreConsumedQuota)
+	assert.Equal(t, int64(actual), debt.ActualQuota)
+	assert.Equal(t, int64(actual-preConsumed), debt.DeltaQuota)
 	assert.Equal(t, task.GetUpstreamTaskID(), debt.UpstreamTaskId, "欠款记录包含上游任务 ID")
 	assert.Equal(t, "doubao-seedance-2-0-260128", debt.ModelName)
 	assert.False(t, debt.AlertSent, "告警发送成功前保持 false（可重试）")
@@ -227,7 +227,7 @@ func TestSeedanceSettle_IdempotentDebtNoDuplicate(t *testing.T) {
 	require.Equal(t, SeedanceSettleDebtCreated, SettleSeedanceTaskBilling(ctx, adaptor, task, taskResult))
 	assert.Equal(t, int64(1), getDebtCount(t, task.TaskID), "重复结算不得产生第二条欠款")
 	assert.True(t, isUserDebtFrozen(t, userID), "重复结算不重复冻结（已冻结保持）")
-	assert.Equal(t, 100, getUserQuota(t, userID), "重复结算不得重复扣费")
+	assert.Equal(t, int64(100), getUserQuota(t, userID), "重复结算不得重复扣费")
 }
 
 // 场景5：管理员账号欠款 → 记录欠款但绝不冻结，仍需最高级别告警标记。
@@ -278,7 +278,7 @@ func TestSeedanceSettle_DBErrorRetryable(t *testing.T) {
 	require.Equal(t, SeedanceSettleRetryable, outcome, "数据库错误必须返回 Retryable")
 	assert.Equal(t, int64(0), getDebtCount(t, task.TaskID), "DB 错误不落欠款（避免伪造已处理）")
 	assert.False(t, isUserDebtFrozen(t, userID), "DB 错误不冻结")
-	assert.Equal(t, 1000, task.Quota, "内存任务额度不被污染")
+	assert.Equal(t, int64(1000), task.Quota, "内存任务额度不被污染")
 }
 
 // 场景7：欠款任务进入终态后并发名额只释放一次（MarkTaskSlotReleasedAndDecrement 幂等）。
@@ -353,8 +353,8 @@ func TestSeedanceSettle_ConcurrentMultiTaskNeverNegative(t *testing.T) {
 	}
 
 	quota := getUserQuota(t, userID)
-	assert.GreaterOrEqual(t, quota, 0, "并发结算任意交错下余额必须 >= 0")
-	assert.Equal(t, balance-3*800, quota, "成功收款总额不超过可用余额（3 个差额）")
+	assert.GreaterOrEqual(t, quota, int64(0), "并发结算任意交错下余额必须 >= 0")
+	assert.Equal(t, int64(balance-3*800), quota, "成功收款总额不超过可用余额（3 个差额）")
 	assert.True(t, isUserDebtFrozen(t, userID), "存在未清欠款时用户保持冻结")
 
 	// 欠款总数 = 5 - 成功收款数
@@ -444,7 +444,7 @@ func TestSeedanceSettle_RepayNeverUnbansAdminDisabled(t *testing.T) {
 }
 
 // seedDebtTaskForService 创建欠款清偿所需的关联任务行。
-func seedDebtTaskForService(t *testing.T, userID int, taskID string, preConsumed int) {
+func seedDebtTaskForService(t *testing.T, userID int, taskID string, preConsumed int64) {
 	t.Helper()
 	task := &model.Task{
 		TaskID:    taskID,
@@ -495,7 +495,7 @@ func TestSeedanceSettle_NonSeedanceCompatUnaffected(t *testing.T) {
 	// 通用路径差额补扣：余额 100 < 差额 500 → 仍按旧语义扣成 -400（兼容分层计费）
 	// 注意：这是通用 RecalculateTaskQuota 的既有行为，不是 Seedance 路径。
 	assert.True(t, RecalculateTaskQuota(ctx, task, 1500, "adaptor计费调整"))
-	assert.Equal(t, 100-500, getUserQuota(t, userID), "非 Seedance 通用路径保持既有欠费兼容语义")
+	assert.Equal(t, int64(100-500), getUserQuota(t, userID), "非 Seedance 通用路径保持既有欠费兼容语义")
 	assert.Equal(t, int64(0), getDebtCount(t, task.TaskID), "非 Seedance 路径不产生欠款记录")
 }
 
@@ -541,8 +541,8 @@ func TestSeedanceSettle_TransactionAllRolledBack(t *testing.T) {
 	require.Equal(t, SeedanceSettleRetryable, outcome, "欠款/冻结任一步失败必须整体回滚为可重试")
 	assert.Equal(t, int64(0), getDebtCount(t, task.TaskID), "回滚：欠款不落库")
 	assert.False(t, isUserDebtFrozen(t, userID), "回滚：冻结不落库")
-	assert.Equal(t, 100, getUserQuota(t, userID), "回滚：资金不变")
-	assert.Equal(t, 1000, task.Quota, "回滚：任务额度不变")
+	assert.Equal(t, int64(100), getUserQuota(t, userID), "回滚：资金不变")
+	assert.Equal(t, int64(1000), task.Quota, "回滚：任务额度不变")
 }
 
 // 场景15：保守预扣(高) → 完成按真实 usage 结算多退少补（端到端：提交估算 ratios
@@ -562,7 +562,7 @@ func TestSeedanceSettle_ConservativePreConsumeThenRefund(t *testing.T) {
 	priceData.AddOtherRatio("video_input", 1.0)
 	preConsumed, clamp := common.QuotaFromFloatChecked(10000 * priceData.OtherRatioMultiplier())
 	require.Nil(t, clamp)
-	require.Greater(t, preConsumed, 10000, "保守预扣必须大于基础价")
+	require.Greater(t, preConsumed, int64(10000), "保守预扣必须大于基础价")
 
 	task := seedSeedanceTask(t, userID, channelID, tokenID, preConsumed)
 	task.PrivateData.BillingContext.OtherRatios = priceData.OtherRatios()
@@ -570,7 +570,7 @@ func TestSeedanceSettle_ConservativePreConsumeThenRefund(t *testing.T) {
 	seedUsedQuota(t, userID, channelID, preConsumed)
 
 	// 实际费用低于预扣（真实 usage 结算）→ 多退少补
-	actual := 8000
+	actual := int64(8000)
 	adaptor := &mockAdaptor{adjustReturn: actual}
 	require.Equal(t, SeedanceSettleSuccess, SettleSeedanceTaskBilling(ctx, adaptor, task, &relaycommon.TaskInfo{Status: model.TaskStatusSuccess}))
 	// seedSeedanceUser 的余额语义是"预扣后余额"（与 task_billing_test 的 seedUser 一致）：
@@ -603,23 +603,23 @@ func TestSeedanceSettle_FullConsistencyOnExactBalance(t *testing.T) {
 
 	delta := actual - preConsumed
 	// 钱包：余额恰好够差额 → 0
-	assert.Equal(t, 0, getUserQuota(t, userID), "钱包扣减差额后余额为 0")
+	assert.Equal(t, int64(0), getUserQuota(t, userID), "钱包扣减差额后余额为 0")
 	// Token：提交时已预扣 preConsumed，结算再扣差额 → remain = 初始 - 预扣 - 差额、
 	// used = 预扣 + 差额，remain+used 不变量保持不变
-	assert.Equal(t, 100000-preConsumed-delta, getTokenRemainQuota(t, tokenID), "Token remain 扣减同一差额")
-	assert.Equal(t, preConsumed+delta, getTokenUsedQuota(t, tokenID), "Token used 增加同一差额")
-	assert.Equal(t, 100000, getTokenRemainQuota(t, tokenID)+getTokenUsedQuota(t, tokenID), "remain+used 资金不变量")
+	assert.Equal(t, int64(100000-preConsumed-delta), getTokenRemainQuota(t, tokenID), "Token remain 扣减同一差额")
+	assert.Equal(t, int64(preConsumed+delta), getTokenUsedQuota(t, tokenID), "Token used 增加同一差额")
+	assert.Equal(t, int64(100000), getTokenRemainQuota(t, tokenID)+getTokenUsedQuota(t, tokenID), "remain+used 资金不变量")
 	// task.Quota：收敛到实际额度
-	assert.Equal(t, actual, task.Quota, "任务额度收敛到实际费用")
+	assert.Equal(t, int64(actual), task.Quota, "任务额度收敛到实际费用")
 	// 累计消耗：用户与渠道 used_quota 各增加同一差额
-	assert.Equal(t, preConsumed+delta, getUserUsedQuota(t, userID), "用户累计消耗增加同一差额")
+	assert.Equal(t, int64(preConsumed+delta), getUserUsedQuota(t, userID), "用户累计消耗增加同一差额")
 	assert.EqualValues(t, preConsumed+delta, getChannelUsedQuota(t, channelID), "渠道累计消耗增加同一差额")
 	// 补扣日志：一条 LogTypeConsume，Quota=差额
 	require.Equal(t, int64(1), countLogs(t), "成功补扣必须恰好一条差额日志")
 	last := getLastLog(t)
 	require.NotNil(t, last)
 	assert.Equal(t, model.LogTypeConsume, last.Type)
-	assert.Equal(t, delta, last.Quota, "日志额度等于差额")
+	assert.Equal(t, int64(delta), last.Quota, "日志额度等于差额")
 	var other map[string]interface{}
 	require.NoError(t, json.Unmarshal([]byte(last.Other), &other))
 	assert.Equal(t, task.TaskID, other["task_id"], "日志携带任务 ID")
@@ -642,20 +642,20 @@ func TestSeedanceSettle_RepeatSettleNoDoubleTokenOrLog(t *testing.T) {
 	require.Equal(t, SeedanceSettleSuccess, SettleSeedanceTaskBilling(ctx, adaptor, task, taskResult))
 
 	delta := actual - preConsumed
-	afterFirst := map[string]int{
+	afterFirst := map[string]int64{
 		"wallet": getUserQuota(t, userID),
 		"token":  getTokenUsedQuota(t, tokenID),
-		"logs":   int(countLogs(t)),
+		"logs":   int64(countLogs(t)),
 		"used":   getUserUsedQuota(t, userID),
 	}
-	assert.Equal(t, preConsumed+delta, afterFirst["token"], "首次结算 Token used = 预扣 + 差额")
+	assert.Equal(t, int64(preConsumed+delta), afterFirst["token"], "首次结算 Token used = 预扣 + 差额")
 
 	// 重复结算：task.Quota 已是 actual → delta=0 → 直接返回，不做任何调整
 	require.Equal(t, SeedanceSettleSuccess, SettleSeedanceTaskBilling(ctx, adaptor, task, taskResult))
 	assert.Equal(t, afterFirst["wallet"], getUserQuota(t, userID), "重复结算不得重复扣钱包")
 	assert.Equal(t, afterFirst["token"], getTokenUsedQuota(t, tokenID), "重复结算不得重复扣 Token")
 	assert.Equal(t, afterFirst["used"], getUserUsedQuota(t, userID), "重复结算不得重复累加 used_quota")
-	assert.Equal(t, afterFirst["logs"], int(countLogs(t)), "重复结算不得重复写差额日志")
+	assert.Equal(t, int64(countLogs(t)), int64(afterFirst["logs"]), "重复结算不得重复写差额日志")
 }
 
 // 场景18：Token 扣减失败（余额不足）→ 资金已收但待补偿标记**与资金同一事务**
@@ -678,15 +678,15 @@ func TestSeedanceSettle_TokenShortPersistsPendingRecovery(t *testing.T) {
 	require.Equal(t, SeedanceSettleSuccess, outcome, "Token 不足不阻断资金结算")
 
 	// 资金已收：钱包扣了差额
-	assert.Equal(t, balance-500, getUserQuota(t, userID), "资金照常收取")
+	assert.Equal(t, int64(balance-500), getUserQuota(t, userID), "资金照常收取")
 	// Token 未扣：remain 保持 400（fixture 预扣后），used 保持预扣额 1000
-	assert.Equal(t, 1400-preConsumed, getTokenRemainQuota(t, tokenID), "Token 余额不足不扣减")
-	assert.Equal(t, preConsumed, getTokenUsedQuota(t, tokenID), "Token used 保持预扣额")
+	assert.Equal(t, int64(1400-preConsumed), getTokenRemainQuota(t, tokenID), "Token 余额不足不扣减")
+	assert.Equal(t, int64(preConsumed), getTokenUsedQuota(t, tokenID), "Token used 保持预扣额")
 	// 恢复信息不丢失：token_delta_pending 与资金同一事务持久化到 DB
-	require.Equal(t, 500, task.TokenDeltaPending, "内存标记待补偿差额（事务提交后同步）")
+	require.Equal(t, int64(500), task.TokenDeltaPending, "内存标记待补偿差额（事务提交后同步）")
 	var reloaded model.Task
 	require.NoError(t, model.DB.Select("token_delta_pending").First(&reloaded, task.ID).Error)
-	assert.Equal(t, 500, reloaded.TokenDeltaPending, "待补偿差额必须随资金事务落库（资金已收 Token 未扣可审计可补偿）")
+	assert.Equal(t, int64(500), reloaded.TokenDeltaPending, "待补偿差额必须随资金事务落库（资金已收 Token 未扣可审计可补偿）")
 
 	// 给 Token 充值后后台补偿：幂等扣减 + 清零标记。
 	// IncreaseTokenQuota(+1000) 语义：remain +1000、used -1000 →
@@ -695,17 +695,17 @@ func TestSeedanceSettle_TokenShortPersistsPendingRecovery(t *testing.T) {
 	compensated, err := model.CompensatePendingTokenDeltas(100)
 	require.NoError(t, err)
 	assert.Equal(t, 1, compensated, "后台补偿成功 1 条")
-	assert.Equal(t, 1400-500, getTokenRemainQuota(t, tokenID), "补偿后 Token 扣减差额")
-	assert.Equal(t, 0+500, getTokenUsedQuota(t, tokenID), "补偿后 Token used 增加差额")
-	assert.Equal(t, 1400, getTokenRemainQuota(t, tokenID)+getTokenUsedQuota(t, tokenID), "remain+used 资金不变量")
+	assert.Equal(t, int64(1400-500), getTokenRemainQuota(t, tokenID), "补偿后 Token 扣减差额")
+	assert.Equal(t, int64(0+500), getTokenUsedQuota(t, tokenID), "补偿后 Token used 增加差额")
+	assert.Equal(t, int64(1400), getTokenRemainQuota(t, tokenID)+getTokenUsedQuota(t, tokenID), "remain+used 资金不变量")
 	require.NoError(t, model.DB.Select("token_delta_pending").First(&reloaded, task.ID).Error)
-	assert.Equal(t, 0, reloaded.TokenDeltaPending, "补偿成功后标记清零")
+	assert.Equal(t, int64(0), reloaded.TokenDeltaPending, "补偿成功后标记清零")
 
 	// 再次补偿：无待补偿记录 → no-op，不重复扣款
 	compensated, err = model.CompensatePendingTokenDeltas(100)
 	require.NoError(t, err)
 	assert.Equal(t, 0, compensated)
-	assert.Equal(t, 1400-500, getTokenRemainQuota(t, tokenID), "重复补偿不重复扣款")
+	assert.Equal(t, int64(1400-500), getTokenRemainQuota(t, tokenID), "重复补偿不重复扣款")
 }
 
 // 场景18b：故障注入——pending 落库失败必须导致**整笔事务回滚**（资金不提交），
@@ -737,20 +737,20 @@ func TestSeedanceSettle_PendingWriteFailureRollsBackFunds(t *testing.T) {
 	require.Equal(t, SeedanceSettleRetryable, outcome, "pending 落库失败必须整体回滚为可重试（资金不得先提交）")
 
 	// 资金/任务额度/Token 全部未变：不存在"资金已提交但 pending 缺失"的状态
-	assert.Equal(t, balance, getUserQuota(t, userID), "回滚：钱包不变")
-	assert.Equal(t, preConsumed, task.Quota, "回滚：任务额度不变")
-	assert.Equal(t, 1400-preConsumed, getTokenRemainQuota(t, tokenID), "回滚：Token 不变")
-	assert.Equal(t, 0, task.TokenDeltaPending, "回滚：内存 pending 不残留")
+	assert.Equal(t, int64(balance), getUserQuota(t, userID), "回滚：钱包不变")
+	assert.Equal(t, int64(preConsumed), task.Quota, "回滚：任务额度不变")
+	assert.Equal(t, int64(1400-preConsumed), getTokenRemainQuota(t, tokenID), "回滚：Token 不变")
+	assert.Equal(t, int64(0), task.TokenDeltaPending, "回滚：内存 pending 不残留")
 	var reloaded model.Task
 	require.NoError(t, model.DB.Select("token_delta_pending").First(&reloaded, task.ID).Error)
-	assert.Equal(t, 0, reloaded.TokenDeltaPending, "回滚：DB pending 不落库")
+	assert.Equal(t, int64(0), reloaded.TokenDeltaPending, "回滚：DB pending 不落库")
 
 	// 移除注入后可重试成功（资金 + pending 一起提交）
 	require.NoError(t, model.DB.Exec("DROP TRIGGER IF EXISTS fail_seedance_pending_write").Error)
 	require.Equal(t, SeedanceSettleSuccess, SettleSeedanceTaskBilling(ctx, adaptor, task, &relaycommon.TaskInfo{Status: model.TaskStatusSuccess}))
-	assert.Equal(t, balance-500, getUserQuota(t, userID), "重试成功：钱包扣差额")
+	assert.Equal(t, int64(balance-500), getUserQuota(t, userID), "重试成功：钱包扣差额")
 	require.NoError(t, model.DB.Select("token_delta_pending").First(&reloaded, task.ID).Error)
-	assert.Equal(t, 500, reloaded.TokenDeltaPending, "重试成功：pending 与资金一起提交")
+	assert.Equal(t, int64(500), reloaded.TokenDeltaPending, "重试成功：pending 与资金一起提交")
 }
 
 // ---------------------------------------------------------------------------
@@ -791,13 +791,13 @@ func TestSeedanceSettle_ConcurrentSameTaskChargesOnce(t *testing.T) {
 	wg.Wait()
 
 	// 只扣一次：钱包 -500、Token used 1000+500、任务额度 1500、累计消耗各 +500
-	assert.Equal(t, 10000-500, getUserQuota(t, userID), "钱包只扣一次")
-	assert.Equal(t, 1000+500, getTokenUsedQuota(t, tokenID), "Token 只扣一次")
-	assert.Equal(t, 100000, getTokenRemainQuota(t, tokenID)+getTokenUsedQuota(t, tokenID), "remain+used 不变量")
+	assert.Equal(t, int64(10000-500), getUserQuota(t, userID), "钱包只扣一次")
+	assert.Equal(t, int64(1000+500), getTokenUsedQuota(t, tokenID), "Token 只扣一次")
+	assert.Equal(t, int64(100000), getTokenRemainQuota(t, tokenID)+getTokenUsedQuota(t, tokenID), "remain+used 不变量")
 	var settled model.Task
 	require.NoError(t, model.DB.First(&settled, task.ID).Error)
-	assert.Equal(t, 1500, settled.Quota, "任务额度收敛一次（DB 视角）")
-	assert.Equal(t, 1000+500, getUserUsedQuota(t, userID), "用户累计消耗只加一次")
+	assert.Equal(t, int64(1500), settled.Quota, "任务额度收敛一次（DB 视角）")
+	assert.Equal(t, int64(1000+500), getUserUsedQuota(t, userID), "用户累计消耗只加一次")
 	assert.Equal(t, int64(1000+500), getChannelUsedQuota(t, channelID), "渠道累计消耗只加一次")
 	assert.Equal(t, int64(1), countLogs(t), "差额日志只写一次")
 	assert.Equal(t, int64(0), getDebtCount(t, task.TaskID), "并发结算不得产生欠款")
@@ -818,8 +818,8 @@ func TestSeedanceSettle_ConcurrentCompensateAndSettleNoDoubleTokenDeduct(t *test
 	adaptor := &mockAdaptor{adjustReturn: 1500}
 	taskResult := &relaycommon.TaskInfo{Status: model.TaskStatusSuccess}
 	require.Equal(t, SeedanceSettleSuccess, SettleSeedanceTaskBilling(ctx, adaptor, task, taskResult))
-	require.Equal(t, 500, task.TokenDeltaPending, "结算落 pending")
-	require.Equal(t, 1500, task.Quota, "任务额度已收敛 → 再次结算 delta=0")
+	require.Equal(t, int64(500), task.TokenDeltaPending, "结算落 pending")
+	require.Equal(t, int64(1500), task.Quota, "任务额度已收敛 → 再次结算 delta=0")
 
 	// 充值后并发：补偿 worker + 重复结算（delta=0 no-op）
 	require.NoError(t, model.IncreaseTokenQuota(tokenID, "", 1000)) // remain 400+1000=1400、used 1000-1000=0
@@ -837,12 +837,12 @@ func TestSeedanceSettle_ConcurrentCompensateAndSettleNoDoubleTokenDeduct(t *test
 	wg.Wait()
 
 	// Token 只扣一次（补偿的 500）：remain = 1400-500 = 900、used = 0+500 = 500
-	assert.Equal(t, 900, getTokenRemainQuota(t, tokenID), "Token 只扣一次（补偿路径）")
-	assert.Equal(t, 500, getTokenUsedQuota(t, tokenID), "Token used 只加一次")
+	assert.Equal(t, int64(900), getTokenRemainQuota(t, tokenID), "Token 只扣一次（补偿路径）")
+	assert.Equal(t, int64(500), getTokenUsedQuota(t, tokenID), "Token used 只加一次")
 	var reloaded model.Task
 	require.NoError(t, model.DB.Select("token_delta_pending").First(&reloaded, task.ID).Error)
-	assert.Equal(t, 0, reloaded.TokenDeltaPending, "补偿后标记清零")
-	assert.Equal(t, 10000-500, getUserQuota(t, userID), "钱包只扣一次（结算差额）")
+	assert.Equal(t, int64(0), reloaded.TokenDeltaPending, "补偿后标记清零")
+	assert.Equal(t, int64(10000-500), getUserQuota(t, userID), "钱包只扣一次（结算差额）")
 }
 
 // ---------------------------------------------------------------------------
@@ -929,7 +929,7 @@ func TestDebtCollectionLog_WalletOverflowReason(t *testing.T) {
 
 	// 允许钱包代偿：钱包收款 + 日志明确记录"订阅不足，钱包代偿"
 	require.NoError(t, model.RepayTaskBillingDebt(userID, debt.ID, model.RepayDebtOptions{AllowWalletOverflow: true}, 100))
-	assert.Equal(t, 2000-500, getUserQuota(t, userID), "钱包代偿差额")
+	assert.Equal(t, int64(2000-500), getUserQuota(t, userID), "钱包代偿差额")
 	assert.Equal(t, int64(900), getSubscriptionUsed(t, subID), "代偿不改变订阅已用量")
 
 	var reloadedDebt model.TaskBillingDebt
@@ -940,6 +940,6 @@ func TestDebtCollectionLog_WalletOverflowReason(t *testing.T) {
 	last := getLastLog(t)
 	require.NotNil(t, last)
 	assert.Equal(t, model.LogTypeConsume, last.Type)
-	assert.Equal(t, 500, last.Quota, "日志额度等于差额")
+	assert.Equal(t, int64(500), last.Quota, "日志额度等于差额")
 	assert.Equal(t, "欠款清偿（订阅不足，钱包代偿）", last.Content, "消费日志必须明确记录钱包代偿原因（问题六）")
 }

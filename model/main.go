@@ -452,7 +452,7 @@ CREATE TABLE IF NOT EXISTS logs (
 	username String DEFAULT '',
 	token_name String DEFAULT '',
 	model_name String DEFAULT '',
-	quota Int32 DEFAULT 0,
+	quota Int64 DEFAULT 0,
 	prompt_tokens Int32 DEFAULT 0,
 	completion_tokens Int32 DEFAULT 0,
 	use_time Int32 DEFAULT 0,

@@ -96,7 +96,7 @@ func taskIsSubscription(task *model.Task) bool {
 
 // taskAdjustTokenQuota 调整任务的令牌额度，delta > 0 表示扣费，delta < 0 表示退还。
 // 需要通过 resolveTokenKey 运行时获取 key（不从 PrivateData 中读取）。
-func taskAdjustTokenQuota(ctx context.Context, task *model.Task, delta int) {
+func taskAdjustTokenQuota(ctx context.Context, task *model.Task, delta int64) {
 	if task.PrivateData.TokenId <= 0 || delta == 0 {
 		return
 	}
@@ -209,7 +209,7 @@ func RefundTaskQuota(ctx context.Context, task *model.Task, reason string) bool 
 // actualQuota 是任务完成后的实际应扣额度，与预扣额度 (task.Quota) 做差额结算。
 // reason 用于日志记录（例如 "token重算" 或 "adaptor调整"）。
 // clamps 可选：若计算 actualQuota 时发生额度饱和，将其记入日志 admin_info（仅管理员可见）。
-func RecalculateTaskQuota(ctx context.Context, task *model.Task, actualQuota int, reason string, clamps ...*common.QuotaClamp) bool {
+func RecalculateTaskQuota(ctx context.Context, task *model.Task, actualQuota int64, reason string, clamps ...*common.QuotaClamp) bool {
 	if actualQuota <= 0 {
 		return true
 	}
@@ -248,12 +248,12 @@ func RecalculateTaskQuota(ctx context.Context, task *model.Task, actualQuota int
 // recordTaskQuotaAdjustLog 写一条任务差额调整日志（补扣 LogTypeConsume /
 // 退款 LogTypeRefund），仅当提交时记录了消费日志才写，保证"消费-退款/补扣"
 // 日志口径对称。Seedance 统一结算与通用差额结算共用此函数，避免口径分叉。
-func recordTaskQuotaAdjustLog(task *model.Task, delta, preConsumedQuota, actualQuota int, reason string, clamps ...*common.QuotaClamp) {
+func recordTaskQuotaAdjustLog(task *model.Task, delta, preConsumedQuota, actualQuota int64, reason string, clamps ...*common.QuotaClamp) {
 	if !task.PrivateData.ConsumeLogRecorded {
 		return
 	}
 	var logType int
-	var logQuota int
+	var logQuota int64
 	if delta > 0 {
 		logType = model.LogTypeConsume
 		logQuota = delta
@@ -301,7 +301,7 @@ func RecalculateTaskQuotaByTokens(ctx context.Context, task *model.Task, totalTo
 // actualQuota = totalTokens × modelRatio × groupRatio × otherMultiplier
 // （饱和转换，防止溢出成负数）。ok=false 表示该任务不适用 token 重算
 // （无倍率配置/固定价格/无法获取用户分组），调用方应保持预扣额度不变。
-func computeTaskQuotaByTokens(task *model.Task, totalTokens int) (actualQuota int, ok bool, clamp *common.QuotaClamp) {
+func computeTaskQuotaByTokens(task *model.Task, totalTokens int) (actualQuota int64, ok bool, clamp *common.QuotaClamp) {
 	if task == nil || totalTokens <= 0 {
 		return 0, false, nil
 	}
@@ -383,7 +383,7 @@ func SettleSeedanceTaskBilling(ctx context.Context, adaptor TaskPollingAdaptor, 
 
 	// 1. 计算实际额度（与通用路径同优先级）
 	reason := "seedance adaptor计费调整"
-	actualQuota := 0
+	actualQuota := int64(0)
 	var clamp *common.QuotaClamp
 	if adj := adaptor.AdjustBillingOnComplete(task, taskResult); adj > 0 {
 		actualQuota = adj
@@ -442,7 +442,7 @@ func SettleSeedanceTaskBilling(ctx context.Context, adaptor TaskPollingAdaptor, 
 // recordSeedanceDebtAndFreeze 创建欠款记录并冻结用户（同一事务），事务提交后
 // 再通知 Root 管理员。同一任务重复结算只会命中已有欠款（幂等 no-op），绝不
 // 重复补扣、重复冻结或重复累计欠款。
-func recordSeedanceDebtAndFreeze(ctx context.Context, task *model.Task, actualQuota, delta int, cause model.TaskQuotaDeltaResult) SeedanceSettleOutcome {
+func recordSeedanceDebtAndFreeze(ctx context.Context, task *model.Task, actualQuota, delta int64, cause model.TaskQuotaDeltaResult) SeedanceSettleOutcome {
 	input := model.DebtInput{
 		UserId:             task.UserId,
 		TaskId:             task.TaskID,

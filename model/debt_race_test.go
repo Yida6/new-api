@@ -50,7 +50,7 @@ func assertDebtFrozenConsistent(t *testing.T, userID int) {
 	}
 }
 
-func seedRaceUser(t *testing.T, userID int, quota int) {
+func seedRaceUser(t *testing.T, userID int, quota int64) {
 	t.Helper()
 	u := &User{Id: userID, Username: "race_user", Quota: quota, Status: common.UserStatusEnabled, Role: common.RoleCommonUser, AffCode: "aff-race"}
 	require.NoError(t, DB.Create(u).Error)

@@ -65,6 +65,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { useStatus } from '@/hooks/use-status'
 import { getUserModels, getUserGroups } from '@/lib/api'
 import { getCurrencyDisplay, getCurrencyLabel } from '@/lib/currency'
+import { formatMaxQuotaHint } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
 import {
@@ -357,6 +358,8 @@ export function ApiKeysMutateDrawer({
   const quotaPlaceholder = tokensOnly
     ? t('Enter quota in tokens')
     : t('Enter quota in {{currency}}', { currency: currencyLabel })
+  // 后端业务上限（common.MaxTokenQuota）换算到当前展示币种的最大可输入值
+  const maxQuotaHint = formatMaxQuotaHint()
   const autoGroupsMode = form.watch('auto_groups_mode')
   const unlimitedQuota = form.watch('unlimited_quota')
 
@@ -634,6 +637,8 @@ export function ApiKeysMutateDrawer({
                           : t('Enter the quota amount in {{currency}}', {
                               currency: currencyLabel,
                             })}
+                        {' · '}
+                        {t('Maximum: {{max}}', { max: maxQuotaHint })}
                       </FormDescription>
                       <FormMessage />
                     </FormItem>

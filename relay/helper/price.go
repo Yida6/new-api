@@ -80,7 +80,7 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 		return modelPriceHelperTiered(c, info, promptTokens, meta, groupRatioInfo)
 	}
 
-	var preConsumedQuota int
+	var preConsumedQuota int64
 	var modelRatio float64
 	var completionRatio float64
 	var cacheRatio float64
@@ -210,7 +210,7 @@ func ModelPriceHelperPerCall(c *gin.Context, info *relaycommon.RelayInfo) (hostt
 		}
 	}
 
-	var quota int
+	var quota int64
 	freeModel := false
 
 	if usePrice {

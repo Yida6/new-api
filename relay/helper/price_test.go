@@ -57,7 +57,7 @@ func TestModelPriceHelperTieredUsesPreloadedRequestInput(t *testing.T) {
 		BillingRatios: map[string]float64{"n": 3},
 	})
 	require.NoError(t, err)
-	require.Equal(t, 1500, priceData.QuotaToPreConsume)
+	require.Equal(t, int64(1500), priceData.QuotaToPreConsume)
 	require.NotNil(t, info.TieredBillingSnapshot)
 	require.Equal(t, "stream", info.TieredBillingSnapshot.EstimatedTier)
 	require.Equal(t, billing_setting.BillingModeTieredExpr, info.TieredBillingSnapshot.BillingMode)
@@ -137,7 +137,7 @@ func TestModelPriceHelperTieredPreConsumeMaxTokensFallback(t *testing.T) {
 
 			priceData, err := ModelPriceHelper(ctx, info, promptTokens, &types.TokenCountMeta{MaxTokens: tc.maxTokens})
 			require.NoError(t, err)
-			require.Equal(t, tc.expected, priceData.QuotaToPreConsume)
+			require.Equal(t, int64(tc.expected), priceData.QuotaToPreConsume)
 		})
 	}
 }
@@ -173,7 +173,7 @@ func TestModelPriceHelperTieredRejectsPreConsumeOverflow(t *testing.T) {
 		},
 	}
 
-	_, err := ModelPriceHelper(ctx, info, 1000, &types.TokenCountMeta{})
+	_, err := ModelPriceHelper(ctx, info, 20000, &types.TokenCountMeta{})
 
 	var clamp *common.QuotaClamp
 	require.ErrorAs(t, err, &clamp)
@@ -240,7 +240,7 @@ func TestModelPriceHelperRequestBillingRatiosOnlyApplyToFixedPrice(t *testing.T)
 			priceData, err := ModelPriceHelper(ctx, info, 1000, meta)
 
 			require.NoError(t, err)
-			require.Equal(t, tt.wantQuota, priceData.QuotaToPreConsume)
+			require.Equal(t, int64(tt.wantQuota), priceData.QuotaToPreConsume)
 			require.Equal(t, tt.wantUsePrice, priceData.UsePrice)
 			require.Equal(t, tt.wantImageCount, priceData.HasOtherRatio("n"))
 			require.Equal(t, priceData.OtherRatios(), info.PriceData.OtherRatios())
@@ -262,7 +262,7 @@ func TestModelPriceHelperRequestBillingRatiosOnlyApplyToFixedPrice(t *testing.T)
 	priceData, err := ModelPriceHelper(ctx, info, 0, meta)
 	require.NoError(t, err)
 	// 0.0000012 * 500000 * 3 = 1.8, then truncate once to 1.
-	require.Equal(t, 1, priceData.QuotaToPreConsume)
+	require.Equal(t, int64(1), priceData.QuotaToPreConsume)
 
 	ctx, info = newInfo("overflow-image-price")
 	_, err = ModelPriceHelper(ctx, info, 0, meta)

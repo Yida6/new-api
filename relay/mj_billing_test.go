@@ -58,8 +58,8 @@ func TestConsumeMjTaskBilling_LogMarkingReflectsReality(t *testing.T) {
 
 	var reloaded model.User
 	require.NoError(t, model.DB.First(&reloaded, 900).Error)
-	assert.Equal(t, 9500, reloaded.Quota, "钱包扣款 500")
-	assert.Equal(t, 500, reloaded.UsedQuota, "累计消耗写入")
+	assert.Equal(t, int64(9500), reloaded.Quota, "钱包扣款 500")
+	assert.Equal(t, int64(500), reloaded.UsedQuota, "累计消耗写入")
 	assert.Equal(t, 1, reloaded.RequestCount)
 
 	// 日志开关关闭 → 日志未写入，返回 false（任务行的标记必须跟随真实结果）
@@ -69,8 +69,8 @@ func TestConsumeMjTaskBilling_LogMarkingReflectsReality(t *testing.T) {
 	assert.False(t, recorded, "日志未写入时 ConsumeLogRecorded 必须为 false")
 
 	require.NoError(t, model.DB.First(&reloaded, 900).Error)
-	assert.Equal(t, 9200, reloaded.Quota)
-	assert.Equal(t, 800, reloaded.UsedQuota, "累计消耗与日志开关无关，仍按扣款累计")
+	assert.Equal(t, int64(9200), reloaded.Quota)
+	assert.Equal(t, int64(800), reloaded.UsedQuota, "累计消耗与日志开关无关，仍按扣款累计")
 	assert.Equal(t, 2, reloaded.RequestCount)
 }
 

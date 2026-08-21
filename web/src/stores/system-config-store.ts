@@ -30,6 +30,8 @@ export interface CurrencyConfig {
   quotaDisplayType: CurrencyDisplayType
   /** Number of quota units that equal one USD */
   quotaPerUnit: number
+  /** Business ceiling for a single quota amount, in internal quota units (int64) */
+  maxQuota: number
   /** Exchange rate from USD to the configured local currency */
   usdExchangeRate: number
   /** Custom currency symbol configured by the admin (used when type === CUSTOM) */
@@ -51,6 +53,8 @@ export const DEFAULT_CURRENCY_CONFIG: CurrencyConfig = {
   displayInCurrency: true,
   quotaDisplayType: 'USD',
   quotaPerUnit: 500000,
+  // 与后端 common.MaxTokenQuota 保持一致：1e15 内部额度单位（≈20 亿美元 @500000）
+  maxQuota: 1000000000000000,
   usdExchangeRate: 1,
   customCurrencySymbol: '¤',
   customCurrencyExchangeRate: 1,

@@ -39,7 +39,7 @@ func TestAttachQuotaSaturationNestsUnderAdminInfo(t *testing.T) {
 	require.True(t, ok, "quota_saturation should be nested under admin_info")
 	require.Equal(t, "QuotaFromDecimal", sat["op"])
 	require.Equal(t, common.QuotaClampOverflow, sat["kind"])
-	require.Equal(t, common.MaxQuota, sat["clamped"])
+	require.Equal(t, int64(common.MaxQuota), sat["clamped"])
 }
 
 // TestAttachQuotaSaturationPreservesExistingAdminInfo verifies the marker is

@@ -869,7 +869,7 @@ func EditChannelByTag(tag string, newTag *string, modelMapping *string, models *
 	return nil
 }
 
-func UpdateChannelUsedQuota(id int, quota int) {
+func UpdateChannelUsedQuota(id int, quota int64) {
 	if common.BatchUpdateEnabled {
 		addNewRecord(BatchUpdateTypeChannelUsedQuota, id, quota)
 		return
@@ -880,11 +880,11 @@ func UpdateChannelUsedQuota(id int, quota int) {
 // UpdateChannelUsedQuotaSync 同步（不走批量队列）调整渠道累计消耗。
 // 与 UpdateUserUsedQuotaAndRequestCountSync 配对，用于异步任务预扣/结算的同步路径，
 // 保证结算/退款在同一事务内读取的是已落库的当前值。
-func UpdateChannelUsedQuotaSync(id int, quota int) {
+func UpdateChannelUsedQuotaSync(id int, quota int64) {
 	updateChannelUsedQuota(id, quota)
 }
 
-func updateChannelUsedQuota(id int, quota int) {
+func updateChannelUsedQuota(id int, quota int64) {
 	err := DB.Model(&Channel{}).Where("id = ?", id).Update("used_quota", gorm.Expr("used_quota + ?", quota)).Error
 	if err != nil {
 		common.SysLog(fmt.Sprintf("failed to update channel used quota: channel_id=%d, delta_quota=%d, error=%v", id, quota, err))

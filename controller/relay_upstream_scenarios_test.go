@@ -129,7 +129,7 @@ func setupScenarioDB(t *testing.T) {
 }
 
 // seedScenarioData 创建渠道 / 用户 / Token / Root 用户。
-func seedScenarioData(t *testing.T, mockURL string, userQuota int) {
+func seedScenarioData(t *testing.T, mockURL string, userQuota int64) {
 	t.Helper()
 	autoBan := 1
 	baseURL := mockURL
@@ -173,7 +173,7 @@ func seedScenarioData(t *testing.T, mockURL string, userQuota int) {
 		Key:            "sk-scenario-token",
 		Status:         common.TokenStatusEnabled,
 		Name:           "scenario-token",
-		RemainQuota:    scenarioUserQuota,
+		RemainQuota:    int64(scenarioUserQuota),
 		Group:          "default",
 		ExpiredTime:    -1,
 		UnlimitedQuota: false,
@@ -246,7 +246,7 @@ func captureLogs(t *testing.T) *bytes.Buffer {
 
 // runScenario 执行一次完整的 RelayTask 提交。
 // mock: 上游 Mock 处理器；requestBody: 客户端请求体；userQuota: 用户初始余额。
-func runScenario(t *testing.T, mock http.HandlerFunc, requestBody string, userQuota, retryTimes, relayTimeout int) (*httptest.ResponseRecorder, *mockUpstreamRecorder) {
+func runScenario(t *testing.T, mock http.HandlerFunc, requestBody string, userQuota int64, retryTimes, relayTimeout int) (*httptest.ResponseRecorder, *mockUpstreamRecorder) {
 	t.Helper()
 	setupScenarioGlobals(t, retryTimes, relayTimeout)
 	setupScenarioDB(t)
@@ -592,7 +592,7 @@ func TestRelayTaskUpstreamSuccessControl(t *testing.T) {
 	// 成功路径：预扣额即结算额（delta=0），余额减少一个任务额度
 	q, err := model.GetUserQuota(scenarioUserID, false)
 	require.NoError(t, err)
-	assert.Less(t, q, scenarioUserQuota, "成功路径应扣减额度")
+	assert.Less(t, q, int64(scenarioUserQuota), "成功路径应扣减额度")
 
 	// 并发名额：由任务持有（任务生命周期释放，而非请求结束释放）
 	count, err := model.GetRunningCountForUser(scenarioUserID)
