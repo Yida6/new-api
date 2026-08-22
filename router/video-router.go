@@ -24,11 +24,23 @@ func SetVideoRouter(router *gin.Engine) {
 	videoPlaybackRouter.Use(middleware.RouteTag("relay"))
 	videoPlaybackRouter.GET("/videos/:task_id/playback", controller.VideoPlaybackProxy)
 
+	// Seedance 创建接口（POST /v1/video/generations）单独挂载模型请求限流：
+	// TokenAuth() → ModelRequestRateLimit() → Distribute() → RelayTask。
+	// 限流读取认证后的用户 ID（c.GetInt("id")）与 Token 分组（ContextKeyTokenGroup，
+	// 空值时回退 ContextKeyUserGroup），并在渠道分配与上游请求之前完成。
+	// 仅此创建接口计入"按用户计数、按分组覆盖"的生成请求额度；GET 轮询、
+	// 视频内容代理、播放地址与播放接口均不计数（保持原有路由结构不变）。
+	seedanceCreateRouter := router.Group("/v1/video/generations")
+	seedanceCreateRouter.Use(middleware.RouteTag("relay"))
+	seedanceCreateRouter.Use(middleware.TokenAuth(), middleware.ModelRequestRateLimit(), middleware.Distribute())
+	{
+		seedanceCreateRouter.POST("", controller.RelayTask)
+	}
+
 	videoV1Router := router.Group("/v1")
 	videoV1Router.Use(middleware.RouteTag("relay"))
 	videoV1Router.Use(middleware.TokenAuth(), middleware.Distribute())
 	{
-		videoV1Router.POST("/video/generations", controller.RelayTask)
 		videoV1Router.GET("/video/generations/:task_id", controller.RelayTaskFetch)
 		videoV1Router.POST("/videos/:video_id/remix", controller.RelayTask)
 	}
