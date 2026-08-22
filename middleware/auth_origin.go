@@ -58,12 +58,18 @@ func requestBrowserOrigin(request *http.Request) (string, bool) {
 	return origin, err == nil
 }
 
+// isAllowedSessionOrigin is only invoked when SessionCookieSecure is true.
+// In that mode TLS is terminated by the reverse proxy (Caddy), so request.TLS
+// is nil even for legitimate HTTPS requests, and forwarded scheme headers are
+// client-controlled and must never be trusted. Deriving the same-origin
+// candidate with http here would let a plaintext origin of the same host
+// (for example http://globalaiclient.com) pass the guard, so the request
+// origin is always derived as https and any non-https origin is rejected.
 func isAllowedSessionOrigin(request *http.Request, origin string) bool {
-	requestScheme := "http"
-	if request.TLS != nil {
-		requestScheme = "https"
+	if !strings.HasPrefix(origin, "https://") {
+		return false
 	}
-	requestOrigin, err := common.NormalizeOrigin(requestScheme + "://" + request.Host)
+	requestOrigin, err := common.NormalizeOrigin("https://" + request.Host)
 	if err == nil && subtle.ConstantTimeCompare([]byte(origin), []byte(requestOrigin)) == 1 {
 		return true
 	}
