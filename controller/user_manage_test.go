@@ -33,6 +33,9 @@ func setupManageUserTestDB(t *testing.T) *gorm.DB {
 	model.DB, model.LOG_DB = db, db
 	require.NoError(t, db.AutoMigrate(
 		&model.User{}, &model.UserSession{}, &model.Log{}, &model.CasbinRule{}, &model.AuthzRole{},
+		// Token: User.Delete()（用户注销/管理删除）事务内会物理清理该用户令牌，
+		// 测试环境必须存在 tokens 表，否则 delete 操作会在事务内失败。
+		&model.Token{},
 	))
 
 	t.Cleanup(func() {

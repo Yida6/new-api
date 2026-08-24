@@ -498,6 +498,18 @@ func InvalidateUserTokensCache(userId int) error {
 	return invalidateTokensCache(tokens)
 }
 
+// deleteUserTokensWithTx 在调用方事务内物理删除指定用户的全部令牌（API Key）。
+// 供用户主动注销路径（User.Delete）使用：与管理员硬删除路径
+// （deleteUserAuthenticationData）对令牌的清理行为保持一致，但范围严格限定为
+// 令牌本身，不触碰 TwoFA/Passkey/UserSession 等仅在硬删除阶段清理的认证数据，
+// 避免误删软删除（可恢复）账号的认证材料。
+func deleteUserTokensWithTx(tx *gorm.DB, userId int) error {
+	if tx == nil || userId <= 0 {
+		return fmt.Errorf("invalid user token deletion")
+	}
+	return tx.Unscoped().Where("user_id = ?", userId).Delete(&Token{}).Error
+}
+
 func invalidateTokensCache(tokens []Token) error {
 	if !common.RedisEnabled {
 		return nil

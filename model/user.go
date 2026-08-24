@@ -913,6 +913,7 @@ func (user *User) Delete() error {
 	if user.Id == 0 {
 		return errors.New("id 为空！")
 	}
+	var tokens []Token
 	var nextAuthVersion int64
 	if err := DB.Transaction(func(tx *gorm.DB) error {
 		var err error
@@ -920,15 +921,28 @@ func (user *User) Delete() error {
 		if err != nil {
 			return err
 		}
+		if common.RedisEnabled {
+			if err := tx.Unscoped().Select("id", commonKeyCol).Where("user_id = ?", user.Id).Find(&tokens).Error; err != nil {
+				return err
+			}
+		}
+		// 与管理员硬删除路径保持一致：注销时物理删除该用户全部令牌，避免孤儿
+		// API Key 残留。令牌清理与用户软删除同处一个事务，任一步失败整体回滚。
+		if err := deleteUserTokensWithTx(tx, user.Id); err != nil {
+			return err
+		}
 		return tx.Delete(user).Error
 	}); err != nil {
 		return err
 	}
 	if err := publishCommittedUserAuthVersion(user.Id, nextAuthVersion); err != nil {
-		return err
+		common.SysError(fmt.Sprintf("failed to publish auth tombstone after deleting user %d: %v", user.Id, err))
 	}
 	if _, err := RevokeAllUserSessions(user.Id, "user_deleted"); err != nil {
 		return err
+	}
+	if err := invalidateTokensCache(tokens); err != nil {
+		common.SysError(fmt.Sprintf("failed to invalidate token cache after deleting user %d: %v", user.Id, err))
 	}
 	return invalidateUserCache(user.Id)
 }
