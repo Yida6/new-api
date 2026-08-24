@@ -1871,6 +1871,7 @@
     "Failed to load playground groups": "プレイグラウンドのグループ読み込みに失敗しました",
     "Failed to load playground models": "プレイグラウンドのモデル読み込みに失敗しました",
     "Failed to load profile": "プロファイルの読み込みに失敗しました",
+    "Failed to read attachment. Please try again.": "添付ファイルを読み込めませんでした。もう一度お試しください。",
     "Failed to load redemption codes": "引き換えコードの読み込みに失敗しました",
     "Failed to load setup data": "セットアップデータの読み込みに失敗しました",
     "Failed to load setup status": "セットアップ状態の読み込みに失敗しました",

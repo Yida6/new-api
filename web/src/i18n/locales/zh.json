@@ -1871,6 +1871,7 @@
     "Failed to load playground groups": "加载 playground 分组失败",
     "Failed to load playground models": "加载 playground 模型失败",
     "Failed to load profile": "加载个人资料失败",
+    "Failed to read attachment. Please try again.": "读取附件失败，请重试。",
     "Failed to load redemption codes": "加载兑换码失败",
     "Failed to load setup data": "无法加载设置数据",
     "Failed to load setup status": "无法加载设置状态",

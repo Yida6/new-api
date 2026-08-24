@@ -91,6 +91,8 @@ import {
 } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
 
+import { submitPromptInput } from './prompt-input-submit'
+
 // ============================================================================
 // Provider Context & Types
 // ============================================================================
@@ -439,7 +441,7 @@ export type PromptInputProps = Omit<
   maxFiles?: number
   maxFileSize?: number // bytes
   onError?: (err: {
-    code: 'max_files' | 'max_file_size' | 'accept'
+    code: 'max_files' | 'max_file_size' | 'accept' | 'file_read'
     message: string
   }) => void
   onSubmit: (
@@ -720,49 +722,30 @@ export const PromptInput = ({
           return (formData.get('message') as string) || ''
         })()
 
-    // Reset form immediately after capturing text to avoid race condition
-    // where user input during async blob conversion would be lost
-    if (!usingProvider) {
-      form.reset()
-    }
-
-    // Convert blob URLs to data URLs asynchronously
-    Promise.all(
-      files.map(async ({ id, ...item }) => {
-        if (item.url && item.url.startsWith('blob:')) {
-          return {
-            ...item,
-            url: await convertBlobUrlToDataUrl(item.url),
-          }
+    void submitPromptInput({
+      text,
+      files,
+      event,
+      convertBlobUrl: convertBlobUrlToDataUrl,
+      onSubmit,
+      onSuccess: () => {
+        clear()
+        if (usingProvider) {
+          controller.textInput.clear()
+          return
         }
-        return item
-      })
-    ).then((convertedFiles: FileUIPart[]) => {
-      try {
-        const result = onSubmit({ text, files: convertedFiles }, event)
 
-        // Handle both sync and async onSubmit
-        if (result instanceof Promise) {
-          result
-            .then(() => {
-              clear()
-              if (usingProvider) {
-                controller.textInput.clear()
-              }
-            })
-            .catch(() => {
-              // Don't clear on error - user may want to retry
-            })
-        } else {
-          // Sync function completed without throwing, clear attachments
-          clear()
-          if (usingProvider) {
-            controller.textInput.clear()
-          }
+        const currentText = new FormData(form).get('message')
+        if (currentText === text) {
+          form.reset()
         }
-      } catch (_error) {
-        // Don't clear on error - user may want to retry
-      }
+      },
+      onConversionError: () => {
+        onError?.({
+          code: 'file_read',
+          message: t('Failed to read attachment. Please try again.'),
+        })
+      },
     })
   }
 

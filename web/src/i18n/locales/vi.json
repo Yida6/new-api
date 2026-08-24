@@ -1871,6 +1871,7 @@
     "Failed to load playground groups": "Tải nhóm playground thất bại",
     "Failed to load playground models": "Tải mô hình playground thất bại",
     "Failed to load profile": "Không thể tải hồ sơ",
+    "Failed to read attachment. Please try again.": "Không thể đọc tệp đính kèm. Vui lòng thử lại.",
     "Failed to load redemption codes": "Không thể tải mã đổi thưởng",
     "Failed to load setup data": "Không thể tải dữ liệu thiết lập",
     "Failed to load setup status": "Không thể tải trạng thái thiết lập",

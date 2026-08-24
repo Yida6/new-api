@@ -1871,6 +1871,7 @@
     "Failed to load playground groups": "Не удалось загрузить группы площадки",
     "Failed to load playground models": "Не удалось загрузить модели площадки",
     "Failed to load profile": "Не удалось загрузить профиль",
+    "Failed to read attachment. Please try again.": "Не удалось прочитать вложение. Повторите попытку.",
     "Failed to load redemption codes": "Не удалось загрузить коды активации",
     "Failed to load setup data": "Не удалось загрузить данные настройки",
     "Failed to load setup status": "Не удалось загрузить статус настройки",

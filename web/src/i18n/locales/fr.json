@@ -1871,6 +1871,7 @@
     "Failed to load playground groups": "Échec du chargement des groupes du playground",
     "Failed to load playground models": "Échec du chargement des modèles du playground",
     "Failed to load profile": "Échec du chargement du profil",
+    "Failed to read attachment. Please try again.": "Impossible de lire la pièce jointe. Veuillez réessayer.",
     "Failed to load redemption codes": "Échec du chargement des codes d'échange",
     "Failed to load setup data": "Échec du chargement des données de configuration",
     "Failed to load setup status": "Échec du chargement de l'état de configuration",
