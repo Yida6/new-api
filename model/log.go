@@ -526,6 +526,11 @@ type RecordTaskBillingLogParams struct {
 	Group     string
 	Other     map[string]interface{}
 	NodeName  string // 任务发起节点；为空时回退当前节点
+	// TotalTokens 任务结算时的上游实际 token 总数（Seedance 等异步任务）。
+	// >0 时写入 other.total_tokens，供前端 Tokens 列对任务类日志回显；
+	// 提交时未知则为 0（不写入）。日志行的 prompt/completion_tokens 保持 0，
+	// 避免"任务总量"被误读为"输入/输出"拆分。
+	TotalTokens int
 }
 
 func RecordTaskBillingLog(params RecordTaskBillingLogParams) {
@@ -539,6 +544,16 @@ func RecordTaskBillingLog(params RecordTaskBillingLogParams) {
 		}
 	}
 	createdAt := common.GetTimestamp()
+	// 任务结算 token 写入 other.total_tokens（>0 时）：异步任务日志的
+	// prompt/completion_tokens 恒为 0，前端 Tokens 列据此字段回显总量。
+	// other 为 nil 时懒初始化，保证 MapToJsonStr 不落 "null"。
+	other := params.Other
+	if other == nil {
+		other = make(map[string]interface{})
+	}
+	if params.TotalTokens > 0 {
+		other["total_tokens"] = params.TotalTokens
+	}
 	log := &Log{
 		UserId:    params.UserId,
 		Username:  username,
@@ -551,7 +566,7 @@ func RecordTaskBillingLog(params RecordTaskBillingLogParams) {
 		ChannelId: params.ChannelId,
 		TokenId:   params.TokenId,
 		Group:     params.Group,
-		Other:     common.MapToJsonStr(params.Other),
+		Other:     common.MapToJsonStr(other),
 	}
 	err := createLog(log)
 	if err != nil {

@@ -653,7 +653,23 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
 
         const promptTokens = log.prompt_tokens || 0
         const completionTokens = log.completion_tokens || 0
+        // Async task logs (Seedance/video settlement) carry the upstream
+        // usage.total_tokens in other instead of the prompt/completion split;
+        // fall back to it so the column shows the real consumption.
+        const taskTotalTokens = other?.total_tokens || 0
         if (promptTokens === 0 && completionTokens === 0) {
+          if (taskTotalTokens > 0) {
+            return (
+              <div className='flex flex-col gap-0.5'>
+                <span className='font-mono text-xs font-medium tabular-nums'>
+                  {taskTotalTokens.toLocaleString()}
+                </span>
+                <span className='text-muted-foreground/60 text-[11px]'>
+                  {t('Task total tokens')}
+                </span>
+              </div>
+            )
+          }
           return <span className='text-muted-foreground text-xs'>-</span>
         }
 

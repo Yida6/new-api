@@ -235,6 +235,10 @@ export interface LogOtherData {
   is_task?: boolean
   task_id?: string
   reason?: string
+  // Task settlement tokens: upstream usage.total_tokens for async tasks
+  // (Seedance/video etc.), written by the billing adjust log at settlement
+  // time. Rendered by the Tokens column when prompt/completion are both 0.
+  total_tokens?: number
   // Subscription billing fields
   subscription_plan_id?: string
   subscription_plan_title?: string

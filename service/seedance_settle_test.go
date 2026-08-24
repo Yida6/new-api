@@ -15,6 +15,7 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	relaykittypes "github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/QuantumNous/new-api/types"
 
 	"github.com/stretchr/testify/assert"
@@ -494,7 +495,7 @@ func TestSeedanceSettle_NonSeedanceCompatUnaffected(t *testing.T) {
 
 	// 通用路径差额补扣：余额 100 < 差额 500 → 仍按旧语义扣成 -400（兼容分层计费）
 	// 注意：这是通用 RecalculateTaskQuota 的既有行为，不是 Seedance 路径。
-	assert.True(t, RecalculateTaskQuota(ctx, task, 1500, "adaptor计费调整"))
+	assert.True(t, RecalculateTaskQuota(ctx, task, 1500, "adaptor计费调整", 0))
 	assert.Equal(t, int64(100-500), getUserQuota(t, userID), "非 Seedance 通用路径保持既有欠费兼容语义")
 	assert.Equal(t, int64(0), getDebtCount(t, task.TaskID), "非 Seedance 路径不产生欠款记录")
 }
@@ -942,4 +943,138 @@ func TestDebtCollectionLog_WalletOverflowReason(t *testing.T) {
 	assert.Equal(t, model.LogTypeConsume, last.Type)
 	assert.Equal(t, int64(500), last.Quota, "日志额度等于差额")
 	assert.Equal(t, "欠款清偿（订阅不足，钱包代偿）", last.Content, "消费日志必须明确记录钱包代偿原因（问题六）")
+}
+
+// ---------------------------------------------------------------------------
+// 任务结算 token 回显：调整日志 other.total_tokens
+// ---------------------------------------------------------------------------
+
+// seedTaskLogRatioEnv 注册 token 重算所需的模型/分组倍率，并在测试结束后恢复。
+func seedTaskLogRatioEnv(t *testing.T, modelName string, modelRatio float64) {
+	t.Helper()
+	originalModelRatios := ratio_setting.ModelRatio2JSONString()
+	originalGroupRatios := ratio_setting.GroupRatio2JSONString()
+	require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(fmt.Sprintf(`{%q:%v}`, modelName, modelRatio)))
+	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":1}`))
+	t.Cleanup(func() {
+		require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(originalModelRatios))
+		require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(originalGroupRatios))
+	})
+}
+
+// getLastLogOtherMap 解析最后一条日志的 Other JSON。
+func getLastLogOtherMap(t *testing.T) map[string]interface{} {
+	t.Helper()
+	last := getLastLog(t)
+	require.NotNil(t, last)
+	var other map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(last.Other), &other))
+	return other
+}
+
+// 场景：Seedance token 重算补扣（实际 > 预扣）→ 调整日志必须携带上游
+// usage.total_tokens（other.total_tokens），供前端 Tokens 列回显。
+func TestSeedanceSettle_TotalTokensRecordedInChargeLog(t *testing.T) {
+	truncate(t)
+	ctx := context.Background()
+	const userID, tokenID, channelID = 4030, 4030, 4030
+	const preConsumed, totalTokens = 5000, 4000
+	seedTaskLogRatioEnv(t, "doubao-seedance-2-0-260128", 3.15)
+	seedSeedanceUser(t, userID, 1000000, common.RoleCommonUser)
+	seedToken(t, tokenID, userID, "sk-seed-token-log", 1000000)
+	seedChannel(t, channelID)
+	seedUsedQuota(t, userID, channelID, preConsumed)
+	task := seedSeedanceTask(t, userID, channelID, tokenID, preConsumed)
+
+	// adaptor 不调整（adjustReturn=0）→ 走 taskResult.TotalTokens 重算分支
+	adaptor := &mockAdaptor{}
+	outcome := SettleSeedanceTaskBilling(ctx, adaptor, task, &relaycommon.TaskInfo{
+		Status:      model.TaskStatusSuccess,
+		TotalTokens: totalTokens,
+	})
+	require.Equal(t, SeedanceSettleSuccess, outcome)
+
+	require.Equal(t, int64(1), countLogs(t), "补扣必须恰好一条差额日志")
+	last := getLastLog(t)
+	require.NotNil(t, last)
+	assert.Equal(t, model.LogTypeConsume, last.Type, "实际高于预扣 → 补扣日志")
+	other := getLastLogOtherMap(t)
+	assert.Equal(t, float64(totalTokens), other["total_tokens"], "调整日志必须携带上游 total_tokens")
+	assert.Equal(t, task.TaskID, other["task_id"], "日志携带任务 ID")
+}
+
+// 场景：Seedance token 重算退款（实际 < 预扣）→ 退款日志同样携带 total_tokens。
+func TestSeedanceSettle_TotalTokensRecordedInRefundLog(t *testing.T) {
+	truncate(t)
+	ctx := context.Background()
+	const userID, tokenID, channelID = 4031, 4031, 4031
+	// actual = 3000×3.15 = 9450 < preConsumed 12600 → 退款 3150
+	const preConsumed, totalTokens = 12600, 3000
+	seedTaskLogRatioEnv(t, "doubao-seedance-2-0-260128", 3.15)
+	seedSeedanceUser(t, userID, 100000, common.RoleCommonUser)
+	seedToken(t, tokenID, userID, "sk-seed-token-refund", 100000)
+	seedChannel(t, channelID)
+	seedUsedQuota(t, userID, channelID, preConsumed)
+	task := seedSeedanceTask(t, userID, channelID, tokenID, preConsumed)
+
+	adaptor := &mockAdaptor{}
+	outcome := SettleSeedanceTaskBilling(ctx, adaptor, task, &relaycommon.TaskInfo{
+		Status:      model.TaskStatusSuccess,
+		TotalTokens: totalTokens,
+	})
+	require.Equal(t, SeedanceSettleSuccess, outcome)
+
+	last := getLastLog(t)
+	require.NotNil(t, last)
+	assert.Equal(t, model.LogTypeRefund, last.Type, "预扣高于实际 → 退款日志")
+	other := getLastLogOtherMap(t)
+	assert.Equal(t, float64(totalTokens), other["total_tokens"], "退款日志必须携带上游 total_tokens")
+}
+
+// 场景：通用 token 重算路径（RecalculateTaskQuotaByTokens）同样透传 total_tokens，
+// 保证非 Seedance 平台（Suno 等）的 token 重算日志口径一致。
+func TestRecalculateTaskQuotaByTokens_RecordsTotalTokens(t *testing.T) {
+	truncate(t)
+	ctx := context.Background()
+	const userID, tokenID, channelID = 4032, 4032, 4032
+	const preConsumed, totalTokens = 1000, 2000
+	seedTaskLogRatioEnv(t, "test-model", 2.0)
+	seedUser(t, userID, 100000)
+	seedToken(t, tokenID, userID, "sk-generic-token-log", 100000)
+	seedChannel(t, channelID)
+	seedUsedQuota(t, userID, channelID, preConsumed)
+	task := makeTask(userID, channelID, preConsumed, tokenID, BillingSourceWallet, 0)
+	require.NoError(t, model.DB.Create(task).Error)
+
+	assert.True(t, RecalculateTaskQuotaByTokens(ctx, task, totalTokens))
+
+	last := getLastLog(t)
+	require.NotNil(t, last)
+	// actual = 2000×2.0×1.0 = 4000 > 1000 → 补扣
+	assert.Equal(t, model.LogTypeConsume, last.Type)
+	other := getLastLogOtherMap(t)
+	assert.Equal(t, float64(totalTokens), other["total_tokens"], "通用 token 重算日志必须携带 total_tokens")
+}
+
+// 场景：adaptor 调整路径（无 token 语义）不写 total_tokens 字段，
+// 且 taskResult 无 usage 时（TotalTokens=0）同样不写——字段缺失语义清晰。
+func TestSeedanceSettle_NoTotalTokensWhenUsageAbsent(t *testing.T) {
+	truncate(t)
+	ctx := context.Background()
+	const userID, tokenID, channelID = 4033, 4033, 4033
+	const preConsumed, actual = 5000, 1000
+	seedSeedanceUser(t, userID, 100000, common.RoleCommonUser)
+	seedToken(t, tokenID, userID, "sk-seed-no-usage", 100000)
+	seedChannel(t, channelID)
+	seedUsedQuota(t, userID, channelID, preConsumed)
+	task := seedSeedanceTask(t, userID, channelID, tokenID, preConsumed)
+
+	adaptor := &mockAdaptor{adjustReturn: actual}
+	require.Equal(t, SeedanceSettleSuccess, SettleSeedanceTaskBilling(ctx, adaptor, task,
+		&relaycommon.TaskInfo{Status: model.TaskStatusSuccess}))
+
+	last := getLastLog(t)
+	require.NotNil(t, last)
+	other := getLastLogOtherMap(t)
+	assert.NotContains(t, other, "total_tokens", "上游未返回 usage 时不得伪造 token 字段")
 }

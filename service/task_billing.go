@@ -208,8 +208,10 @@ func RefundTaskQuota(ctx context.Context, task *model.Task, reason string) bool 
 // RecalculateTaskQuota 通用的异步差额结算。
 // actualQuota 是任务完成后的实际应扣额度，与预扣额度 (task.Quota) 做差额结算。
 // reason 用于日志记录（例如 "token重算" 或 "adaptor调整"）。
+// totalTokens 任务结算时的上游实际 token 总数（>0 时写入调整日志 other.total_tokens；
+// adaptor 调整等无 token 语义的路径传 0）。
 // clamps 可选：若计算 actualQuota 时发生额度饱和，将其记入日志 admin_info（仅管理员可见）。
-func RecalculateTaskQuota(ctx context.Context, task *model.Task, actualQuota int64, reason string, clamps ...*common.QuotaClamp) bool {
+func RecalculateTaskQuota(ctx context.Context, task *model.Task, actualQuota int64, reason string, totalTokens int, clamps ...*common.QuotaClamp) bool {
 	if actualQuota <= 0 {
 		return true
 	}
@@ -241,14 +243,16 @@ func RecalculateTaskQuota(ctx context.Context, task *model.Task, actualQuota int
 	taskAdjustTokenQuota(ctx, task, quotaDelta)
 
 	// 计费调整日志（消费/退款口径对称）
-	recordTaskQuotaAdjustLog(task, quotaDelta, preConsumedQuota, actualQuota, reason, clamps...)
+	recordTaskQuotaAdjustLog(task, quotaDelta, preConsumedQuota, actualQuota, reason, totalTokens, clamps...)
 	return true
 }
 
 // recordTaskQuotaAdjustLog 写一条任务差额调整日志（补扣 LogTypeConsume /
 // 退款 LogTypeRefund），仅当提交时记录了消费日志才写，保证"消费-退款/补扣"
 // 日志口径对称。Seedance 统一结算与通用差额结算共用此函数，避免口径分叉。
-func recordTaskQuotaAdjustLog(task *model.Task, delta, preConsumedQuota, actualQuota int64, reason string, clamps ...*common.QuotaClamp) {
+// totalTokens 为任务结算时的上游实际 token 总数（>0 时写入 other.total_tokens，
+// 供前端 Tokens 列回显；未知/不适用传 0）。
+func recordTaskQuotaAdjustLog(task *model.Task, delta, preConsumedQuota, actualQuota int64, reason string, totalTokens int, clamps ...*common.QuotaClamp) {
 	if !task.PrivateData.ConsumeLogRecorded {
 		return
 	}
@@ -269,16 +273,17 @@ func recordTaskQuotaAdjustLog(task *model.Task, delta, preConsumedQuota, actualQ
 		attachQuotaSaturationToOther(other, clamp)
 	}
 	model.RecordTaskBillingLog(model.RecordTaskBillingLogParams{
-		UserId:    task.UserId,
-		LogType:   logType,
-		Content:   reason,
-		ChannelId: task.ChannelId,
-		ModelName: taskModelName(task),
-		Quota:     logQuota,
-		TokenId:   task.PrivateData.TokenId,
-		Group:     task.Group,
-		Other:     other,
-		NodeName:  task.PrivateData.NodeName,
+		UserId:      task.UserId,
+		LogType:     logType,
+		Content:     reason,
+		ChannelId:   task.ChannelId,
+		ModelName:   taskModelName(task),
+		Quota:       logQuota,
+		TokenId:     task.PrivateData.TokenId,
+		Group:       task.Group,
+		Other:       other,
+		NodeName:    task.PrivateData.NodeName,
+		TotalTokens: totalTokens,
 	})
 }
 
@@ -294,7 +299,7 @@ func RecalculateTaskQuotaByTokens(ctx context.Context, task *model.Task, totalTo
 		return true
 	}
 	reason := fmt.Sprintf("token重算：tokens=%d", totalTokens)
-	return RecalculateTaskQuota(ctx, task, actualQuota, reason)
+	return RecalculateTaskQuota(ctx, task, actualQuota, reason, totalTokens)
 }
 
 // computeTaskQuotaByTokens 计算任务按 token 重算后的实际额度：
@@ -385,6 +390,13 @@ func SettleSeedanceTaskBilling(ctx context.Context, adaptor TaskPollingAdaptor, 
 	reason := "seedance adaptor计费调整"
 	actualQuota := int64(0)
 	var clamp *common.QuotaClamp
+	// settleTotalTokens 结算时上游返回的实际 token 总数，写入调整日志
+	// other.total_tokens 供前端 Tokens 列回显（adaptor 分支同样透传，
+	// 上游 usage 有值即记录）。
+	settleTotalTokens := 0
+	if taskResult != nil {
+		settleTotalTokens = taskResult.TotalTokens
+	}
 	if adj := adaptor.AdjustBillingOnComplete(task, taskResult); adj > 0 {
 		actualQuota = adj
 	} else if taskResult != nil && taskResult.TotalTokens > 0 {
@@ -425,9 +437,9 @@ func SettleSeedanceTaskBilling(ctx context.Context, adaptor TaskPollingAdaptor, 
 		}
 		// 4. 差额消费日志（含 quota saturation 信息，与退款路径口径一致）
 		if clamp != nil {
-			recordTaskQuotaAdjustLog(task, delta, preConsumed, actualQuota, reason, clamp)
+			recordTaskQuotaAdjustLog(task, delta, preConsumed, actualQuota, reason, settleTotalTokens, clamp)
 		} else {
-			recordTaskQuotaAdjustLog(task, delta, preConsumed, actualQuota, reason)
+			recordTaskQuotaAdjustLog(task, delta, preConsumed, actualQuota, reason, settleTotalTokens)
 		}
 		return SeedanceSettleSuccess
 	case model.TaskQuotaDeltaInsufficientBalance, model.TaskQuotaDeltaSubscriptionExceeded, model.TaskQuotaDeltaUserNotFound:
