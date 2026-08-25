@@ -93,12 +93,15 @@ export const BILLING_PAGE_SIZES = [10, 20, 50] as const
 export interface BillingStats {
   /** Net spend (consume - refund), server-aggregated via /self/stat */
   netQuota: number
-  /** Number of billable records in the filtered dataset */
+  /** Number of real requests in the filtered dataset (excludes adjustments) */
   requestCount: number
-  /** Sum of prompt_tokens across the filtered dataset */
-  inputTokens: number
-  /** Sum of completion_tokens across the filtered dataset */
-  outputTokens: number
+  /**
+   * Total tokens across real requests. For sync requests this is
+   * prompt_tokens + completion_tokens; for async tasks (Seedance etc.) it is
+   * their single upstream total (other.total_tokens), since those have no
+   * input/output split.
+   */
+  totalTokens: number
 }
 
 export type BillingLog = UsageLog

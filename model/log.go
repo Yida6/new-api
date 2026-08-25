@@ -599,6 +599,56 @@ func RecordTaskBillingLog(params RecordTaskBillingLogParams) {
 	}
 }
 
+// BackfillTaskConsumeLogTotalTokens 任务结算拿到上游实际 total_tokens 后，
+// 回填到该任务"提交消费日志"（type=consume 且 other.task_id 匹配）的
+// other.total_tokens，使消费记录行也能回显总 token —— 异步任务（Seedance
+// 等）提交瞬间上游无 usage，只有结算完成后才能拿到。
+//
+// 幂等：重复回填同值直接返回 true（不重复写）；值不同则以结算为准覆盖。
+// 范围：ClickHouse 日志库不支持 UPDATE，直接跳过；其余日志库（MySQL /
+// SQLite）走通用 read-modify-write，不依赖数据库 JSON 函数。
+// 回填属展示增强，失败不影响账务正确性（返回 false 不向上抛错）。
+func BackfillTaskConsumeLogTotalTokens(userId int, taskID string, totalTokens int) bool {
+	if userId <= 0 || taskID == "" || totalTokens <= 0 {
+		return false
+	}
+	if common.UsingLogDatabase(common.DatabaseTypeClickHouse) {
+		return false
+	}
+	// 定位提交消费日志：type=consume + other 含 is_task 标记 + task_id 值。
+	// 刻意不用 `%"task_id":"<id>%"` 整键匹配：glebarez/sqlite（测试环境）
+	// 对 LIKE pattern 末尾的 `%"` 序列匹配异常（返回 0 行），而
+	// `%"is_task":true%` 与 `%<taskID>%` 两个独立 pattern 在各库均正常；
+	// 提交日志与补扣日志同为 LogTypeConsume，is_task 是二者的唯一区分。
+	pattern := "%" + taskID + "%"
+	var target Log
+	err := LOG_DB.Where("user_id = ? AND type = ? AND other LIKE ? AND other LIKE ?",
+		userId, LogTypeConsume, `%"is_task":true%`, pattern).
+		Order("id desc").Limit(1).First(&target).Error
+	if err != nil {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			common.SysError("backfill task consume log query error: " + err.Error())
+		}
+		return false
+	}
+	other, _ := common.StrToMap(target.Other)
+	if other == nil {
+		other = make(map[string]interface{})
+	}
+	if v, ok := other["total_tokens"].(float64); ok && int(v) == totalTokens {
+		return true
+	}
+	other["total_tokens"] = totalTokens
+	res := LOG_DB.Model(&Log{}).
+		Where("id = ? AND user_id = ? AND type = ?", target.Id, userId, LogTypeConsume).
+		UpdateColumn("other", common.MapToJsonStr(other))
+	if res.Error != nil {
+		common.SysError("backfill task consume log update error: " + res.Error.Error())
+		return false
+	}
+	return res.RowsAffected > 0
+}
+
 func GetAllLogs(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, startIdx int, num int, channel int, group string, requestId string, upstreamRequestId string) (logs []*Log, total int64, err error) {
 	var tx *gorm.DB
 	if logType == LogTypeUnknown {
@@ -755,7 +805,7 @@ type Stat struct {
 	Tpm   int   `json:"tpm"`
 }
 
-func SumUsedQuota(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, channel int, group string) (stat Stat, err error) {
+func SumUsedQuota(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, channel int, group string, requestId string, upstreamRequestId string) (stat Stat, err error) {
 	// 净消费 = 消费日志额度合计 - 退款日志额度合计。
 	// 异步任务提交时预扣的额度记为消费日志，差额退款/全额退款记为退款日志，
 	// 因此只有两者相减才能反映真实消耗（如 Seedance 预扣 $1.5754、退款 $1.2563、净消费 $0.3191）。
@@ -779,6 +829,12 @@ func SumUsedQuota(logType int, startTimestamp int64, endTimestamp int64, modelNa
 		}
 		if tx, err = applyExplicitLogTextFilter(tx, "model_name", modelName); err != nil {
 			return tx, err
+		}
+		if requestId != "" {
+			tx = tx.Where("request_id = ?", requestId)
+		}
+		if upstreamRequestId != "" {
+			tx = tx.Where("upstream_request_id = ?", upstreamRequestId)
 		}
 		if channel != 0 {
 			tx = tx.Where("channel_id = ?", channel)

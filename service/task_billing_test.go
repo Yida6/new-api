@@ -999,7 +999,7 @@ func TestTaskNetUsage_Overcharged(t *testing.T) {
 	assert.Equal(t, int64(actualQuota), quota)
 
 	// 统计接口返回净值：消费 5000 - 退款 4000 = 1000
-	stat, err := model.SumUsedQuota(0, 0, 0, "", "test_user", "test_token", 0, "")
+	stat, err := model.SumUsedQuota(0, 0, 0, "", "test_user", "test_token", 0, "", "", "")
 	require.NoError(t, err)
 	assert.Equal(t, int64(actualQuota), stat.Quota)
 
@@ -1040,7 +1040,7 @@ func TestTaskNetUsage_Undercharged(t *testing.T) {
 	assert.Equal(t, 1, count) // 补扣不计请求
 	assert.Equal(t, int64(actualQuota), quota)
 
-	stat, err := model.SumUsedQuota(0, 0, 0, "", "test_user", "test_token", 0, "")
+	stat, err := model.SumUsedQuota(0, 0, 0, "", "test_user", "test_token", 0, "", "", "")
 	require.NoError(t, err)
 	assert.Equal(t, int64(actualQuota), stat.Quota)
 	assert.Equal(t, 1, stat.Rpm) // 补扣/退款日志不计为一次新请求
@@ -1073,7 +1073,7 @@ func TestTaskNetUsage_FullRefund(t *testing.T) {
 	assert.Equal(t, 1, count)
 	assert.Equal(t, int64(0), quota)
 
-	stat, err := model.SumUsedQuota(0, 0, 0, "", "test_user", "test_token", 0, "")
+	stat, err := model.SumUsedQuota(0, 0, 0, "", "test_user", "test_token", 0, "", "", "")
 	require.NoError(t, err)
 	assert.Equal(t, int64(0), stat.Quota)
 

@@ -56,6 +56,22 @@ func LogTaskConsumption(c *gin.Context, info *relaycommon.RelayInfo) (bool, erro
 		other["is_model_mapped"] = true
 		other["upstream_model_name"] = info.UpstreamModelName
 	}
+	// task_id:提交消费日志与 task 行(TaskID)的关联键。异步任务提交瞬间
+	// 上游无 usage,结算完成后才拿到实际 total_tokens,经
+	// model.BackfillTaskConsumeLogTotalTokens 按 task_id 回填到本日志的
+	// other.total_tokens,使消费记录行也能回显总 token。优先取
+	// TaskRelayInfo.PublicTaskID(与 model.InitTask 落库的 task.TaskID 一致,
+	// 见 relay.RelayTaskSubmit 第 3 步的同步),兜底 info.PublicTaskID。
+	taskID := ""
+	if info.TaskRelayInfo != nil {
+		taskID = info.TaskRelayInfo.PublicTaskID
+	}
+	if taskID == "" {
+		taskID = info.PublicTaskID
+	}
+	if taskID != "" {
+		other["task_id"] = taskID
+	}
 	attachQuotaSaturation(c, info, other)
 	consumeLogRecorded := model.RecordConsumeLog(c, info.UserId, model.RecordConsumeLogParams{
 		ChannelId: info.ChannelId,
@@ -221,6 +237,8 @@ func RecalculateTaskQuota(ctx context.Context, task *model.Task, actualQuota int
 	if quotaDelta == 0 {
 		logger.LogInfo(ctx, fmt.Sprintf("任务 %s 预扣费准确（%s，%s）",
 			task.TaskID, logger.LogQuota(actualQuota), reason))
+		// 预扣精确命中同样回填（delta==0 时不写调整日志，回填是唯一展示通道）。
+		model.BackfillTaskConsumeLogTotalTokens(task.UserId, task.TaskID, totalTokens)
 		return true
 	}
 
@@ -244,6 +262,9 @@ func RecalculateTaskQuota(ctx context.Context, task *model.Task, actualQuota int
 
 	// 计费调整日志（消费/退款口径对称）
 	recordTaskQuotaAdjustLog(task, quotaDelta, preConsumedQuota, actualQuota, reason, totalTokens, clamps...)
+	// 回填提交消费日志：结算拿到上游实际 total_tokens，使提交行的 Tokens
+	// 列也能回显总量（adaptor 调整等无 token 语义路径 totalTokens=0 时内部跳过）。
+	model.BackfillTaskConsumeLogTotalTokens(task.UserId, task.TaskID, totalTokens)
 	return true
 }
 
@@ -416,6 +437,11 @@ func SettleSeedanceTaskBilling(ctx context.Context, adaptor TaskPollingAdaptor, 
 	delta := actualQuota - preConsumed
 	if delta == 0 {
 		logger.LogInfo(ctx, fmt.Sprintf("任务 %s Seedance 预扣费准确（%s，%s）", task.TaskID, logger.LogQuota(actualQuota), reason))
+		// 预扣精确命中同样回填：结算拿到了上游实际 total_tokens，提交消费
+		// 日志应回显（delta==0 时不写调整日志，回填是唯一展示通道）。
+		if settleTotalTokens > 0 {
+			model.BackfillTaskConsumeLogTotalTokens(task.UserId, task.TaskID, settleTotalTokens)
+		}
 		return SeedanceSettleSuccess
 	}
 
@@ -440,6 +466,11 @@ func SettleSeedanceTaskBilling(ctx context.Context, adaptor TaskPollingAdaptor, 
 			recordTaskQuotaAdjustLog(task, delta, preConsumed, actualQuota, reason, settleTotalTokens, clamp)
 		} else {
 			recordTaskQuotaAdjustLog(task, delta, preConsumed, actualQuota, reason, settleTotalTokens)
+		}
+		// 5. 回填提交消费日志：结算拿到上游实际 total_tokens，使提交行的
+		//    Tokens 列也能回显总量（异步任务提交瞬间上游无 usage）。
+		if settleTotalTokens > 0 {
+			model.BackfillTaskConsumeLogTotalTokens(task.UserId, task.TaskID, settleTotalTokens)
 		}
 		return SeedanceSettleSuccess
 	case model.TaskQuotaDeltaInsufficientBalance, model.TaskQuotaDeltaSubscriptionExceeded, model.TaskQuotaDeltaUserNotFound:

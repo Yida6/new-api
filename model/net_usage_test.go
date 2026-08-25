@@ -109,7 +109,7 @@ func TestSumUsedQuota_NetAndRpm(t *testing.T) {
 		Other: `{"task_id":"t2","pre_consumed_quota":1000}`,
 	}).Error)
 
-	stat, err := SumUsedQuota(LogTypeUnknown, 0, 0, "seedance-01", "net", "tok", 2004, "default")
+	stat, err := SumUsedQuota(LogTypeUnknown, 0, 0, "seedance-01", "net", "tok", 2004, "default", "", "")
 	require.NoError(t, err)
 	// 净消费 = 5000 + 2000 - 4000 = 3000
 	assert.Equal(t, int64(3000), stat.Quota)

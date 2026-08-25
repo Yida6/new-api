@@ -186,9 +186,17 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 		return nil, taskErr
 	}
 
-	// 3. 预生成公开 task ID（仅首次）
+	// 3. 预生成公开 task ID(仅首次)
 	if info.PublicTaskID == "" {
 		info.PublicTaskID = model.GenerateTaskID()
+	}
+	// 同步到 TaskRelayInfo.PublicTaskID(仅当为空):model.InitTask 落库的
+	// task.TaskID 优先取 TaskRelayInfo.PublicTaskID,提交消费日志写入的
+	// other.task_id 也必须与之一致,否则结算拿到 total_tokens 后回填
+	// 提交日志时无法按 task_id 匹配。幂等键路径下控制器已预生成该值,
+	// 此处不覆盖。
+	if info.TaskRelayInfo != nil && info.TaskRelayInfo.PublicTaskID == "" {
+		info.TaskRelayInfo.PublicTaskID = info.PublicTaskID
 	}
 
 	// 4. 价格计算：基础模型价格

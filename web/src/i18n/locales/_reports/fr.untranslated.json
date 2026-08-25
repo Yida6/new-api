@@ -1,0 +1,18 @@
+{
+  "Connect mainstream AI models through one standard API, with routing, billing and observability managed in one place.": "Connect mainstream AI models through one standard API, with routing, billing and observability managed in one place.",
+  "More models available in the console": "More models available in the console",
+  "Route by priority, weight and channel health": "Route by priority, weight and channel health",
+  "Track model usage and cost with clear rules": "Track model usage and cost with clear rules",
+  "Inspect requests, latency, tokens and failures": "Inspect requests, latency, tokens and failures",
+  "Use one request format to access mainstream text, reasoning, image and video models": "Use one request format to access mainstream text, reasoning, image and video models",
+  "Combine priorities, weights and automatic failover for reliable traffic": "Combine priorities, weights and automatic failover for reliable traffic",
+  "Keep model pricing, groups and usage settlement under control": "Keep model pricing, groups and usage settlement under control",
+  "See every request, token, cost, latency and upstream error": "See every request, token, cost, latency and upstream error",
+  "Traceable from request to channel": "Traceable from request to channel",
+  "High concurrency with load balancing and rate limiting": "High concurrency with load balancing and rate limiting",
+  "Keep familiar SDKs and change only the base URL": "Keep familiar SDKs and change only the base URL",
+  "Add model channels, then set priorities, weights and access groups": "Add model channels, then set priorities, weights and access groups",
+  "Point your application to one base URL and select the model you need": "Point your application to one base URL and select the model you need",
+  "Track usage, costs, latency and channel health with real-time analytics": "Track usage, costs, latency and channel health with real-time analytics",
+  "Connect mainstream models through one gateway and keep routing, billing and operations under control.": "Connect mainstream models through one gateway and keep routing, billing and operations under control."
+}

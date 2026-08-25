@@ -38,13 +38,15 @@ import {
 import { formatLogQuota } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
+import { parseLogOther } from '@/features/usage-logs/lib'
+
 import {
   formatBillingTime,
   formatTokenCount,
   getBillingStatus,
   getBillingTypeLabel,
 } from '../lib/format'
-import { BILLING_PAGE_SIZES, type BillingLog } from '../types'
+import { BILLING_LOG_TYPES, BILLING_PAGE_SIZES, type BillingLog } from '../types'
 
 interface BillingTableProps {
   logs: BillingLog[]
@@ -85,7 +87,7 @@ export function BillingTable(props: BillingTableProps) {
     if (loading) {
       return (
         <TableRow className='hover:bg-transparent'>
-          <TableCell colSpan={8} className='text-muted-foreground py-10 text-center'>
+          <TableCell colSpan={7} className='text-muted-foreground py-10 text-center'>
             {t('Loading')}
           </TableCell>
         </TableRow>
@@ -94,7 +96,7 @@ export function BillingTable(props: BillingTableProps) {
     if (logs.length === 0) {
       return (
         <TableRow className='hover:bg-transparent'>
-          <TableCell colSpan={8} className='text-muted-foreground py-10 text-center'>
+          <TableCell colSpan={7} className='text-muted-foreground py-10 text-center'>
             {t('No billing records')}
           </TableCell>
         </TableRow>
@@ -103,6 +105,17 @@ export function BillingTable(props: BillingTableProps) {
     return pageRows.map((log) => {
       const status = getBillingStatus(log)
       const billingType = getBillingTypeLabel(log)
+      const other = parseLogOther(log.other)
+      // 异步任务（Seedance 等）把上游总 token 写入 other.total_tokens，
+      // prompt/completion 恒为 0；总 token 既非输入也非输出，单独展示。
+      const taskTotalTokens = other?.total_tokens || 0
+      const isAsyncTaskTokens =
+        log.prompt_tokens === 0 &&
+        log.completion_tokens === 0 &&
+        taskTotalTokens > 0
+      // 退款记录显示负号，使明细金额可直接与"消费减退款"的累计消费核对。
+      const amount =
+        log.type === BILLING_LOG_TYPES.REFUND ? -log.quota : log.quota
       return (
         <TableRow key={log.id}>
           <TableCell className='text-muted-foreground whitespace-nowrap font-mono text-xs tabular-nums'>
@@ -117,13 +130,23 @@ export function BillingTable(props: BillingTableProps) {
             </Badge>
           </TableCell>
           <TableCell className='text-right tabular-nums'>
-            {formatTokenCount(log.prompt_tokens)}
-          </TableCell>
-          <TableCell className='text-right tabular-nums'>
-            {formatTokenCount(log.completion_tokens)}
+            {isAsyncTaskTokens ? (
+              <div className='flex flex-col items-end gap-0.5'>
+                <span className='font-mono text-xs font-medium tabular-nums'>
+                  {formatTokenCount(taskTotalTokens)}
+                </span>
+                <span className='text-muted-foreground/60 text-[11px]'>
+                  {t('Task total tokens')}
+                </span>
+              </div>
+            ) : (
+              formatTokenCount(
+                (log.prompt_tokens || 0) + (log.completion_tokens || 0)
+              )
+            )}
           </TableCell>
           <TableCell className='text-right font-medium tabular-nums'>
-            {formatLogQuota(log.quota || 0)}
+            {formatLogQuota(amount || 0)}
           </TableCell>
           <TableCell>
             <StatusBadge
@@ -155,12 +178,7 @@ export function BillingTable(props: BillingTableProps) {
               <TableHead className='whitespace-nowrap'>{t('Time')}</TableHead>
               <TableHead>{t('Model Name')}</TableHead>
               <TableHead>{t('Billing Type')}</TableHead>
-              <TableHead className='text-right'>
-                {t('Input Tokens')}
-              </TableHead>
-              <TableHead className='text-right'>
-                {t('Output Tokens')}
-              </TableHead>
+              <TableHead className='text-right'>{t('Tokens')}</TableHead>
               <TableHead className='text-right'>{t('Amount')}</TableHead>
               <TableHead>{t('Status')}</TableHead>
               <TableHead>{t('Request ID')}</TableHead>

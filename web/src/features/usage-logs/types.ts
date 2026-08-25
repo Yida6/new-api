@@ -235,6 +235,12 @@ export interface LogOtherData {
   is_task?: boolean
   task_id?: string
   reason?: string
+  // Task billing adjustment metadata (差额补扣/退款调整记录): pre_consumed_quota
+  // is the amount pre-charged at submission, actual_quota the settled amount.
+  // Their presence (with task_id) marks the record as a task billing adjustment,
+  // not a new request.
+  pre_consumed_quota?: number
+  actual_quota?: number
   // Task settlement tokens: upstream usage.total_tokens for async tasks
   // (Seedance/video etc.), written by the billing adjust log at settlement
   // time. Rendered by the Tokens column when prompt/completion are both 0.

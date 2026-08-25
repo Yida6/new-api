@@ -82,25 +82,12 @@ export function BillingStats(props: BillingStatsProps) {
         }
       />
       <StatCard
-        label={t('Input Tokens')}
+        label={t('Tokens')}
         loading={loading}
         value={
           stats ? (
             <span className='text-chart-1'>
-              {stats.inputTokens.toLocaleString('en-US')}
-            </span>
-          ) : (
-            '—'
-          )
-        }
-      />
-      <StatCard
-        label={t('Output Tokens')}
-        loading={loading}
-        value={
-          stats ? (
-            <span className='text-chart-1'>
-              {stats.outputTokens.toLocaleString('en-US')}
+              {stats.totalTokens.toLocaleString('en-US')}
             </span>
           ) : (
             '—'
