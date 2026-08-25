@@ -25,6 +25,7 @@ import {
   LayoutDashboard,
   ListTodo,
   Radio,
+  ReceiptText,
   ServerCog,
   Settings,
   Ticket,
@@ -85,6 +86,11 @@ export function useSidebarData(): SidebarData {
         id: 'personal',
         title: t('Personal'),
         items: [
+          {
+            title: t('Consumer Billing'),
+            url: '/billing',
+            icon: ReceiptText,
+          },
           {
             title: t('Wallet'),
             url: '/wallet',
