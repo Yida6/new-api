@@ -38,13 +38,13 @@ import {
 import { formatLogQuota } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
-import { parseLogOther } from '@/features/usage-logs/lib'
-
 import {
   formatBillingTime,
   formatTokenCount,
   getBillingStatus,
   getBillingTypeLabel,
+  rowTokenInfo,
+  submissionTaskIds,
   taskTotalTokensByTaskId,
 } from '../lib/format'
 import { BILLING_LOG_TYPES, BILLING_PAGE_SIZES, type BillingLog } from '../types'
@@ -74,11 +74,10 @@ export function BillingTable(props: BillingTableProps) {
   }, [logs, safePage, pageSize])
 
   // async 任务的总 token 由调整日志（退款/补扣）的 other.total_tokens 提供，
-  // 通过 task_id 反查到提交消费日志所在的行，保证"任务一次提交对应一次 token 计入"。
-  const taskTokens = useMemo(
-    () => taskTotalTokensByTaskId(logs),
-    [logs]
-  )
+  // 按 task_id 去重；submissionTaskIds 记录哪些 task_id 有真正的提交消费日志，
+  // 便于把 token 展示在提交行、避免调整行重复显示。
+  const taskTokens = useMemo(() => taskTotalTokensByTaskId(logs), [logs])
+  const submissionIds = useMemo(() => submissionTaskIds(logs), [logs])
 
   const pageNumbers = useMemo(() => {
     const max = 7
@@ -113,21 +112,14 @@ export function BillingTable(props: BillingTableProps) {
     return pageRows.map((log) => {
       const status = getBillingStatus(log)
       const billingType = getBillingTypeLabel(log)
-      const other = parseLogOther(log.other)
-      // 异步任务的 token 归属于"提交消费日志"（is_task=true，且非补扣/退款
-      // 调整行），由同集合内的退款/补扣日志按 task_id 提供 total_tokens。
-      // 调整行不再二次显示，避免同任务在明细里出现两次。
-      const baseInput = log.prompt_tokens || 0
-      const baseOutput = log.completion_tokens || 0
-      const isSubmissionTask = !!other?.is_task && !other?.pre_consumed_quota
-      const resolvedTokens =
-        baseInput > 0 || baseOutput > 0
-          ? baseInput + baseOutput
-          : isSubmissionTask && other?.task_id
-            ? (taskTokens.get(other.task_id) ?? 0)
-            : 0
-      const isAsyncTaskTokens =
-        baseInput === 0 && baseOutput === 0 && resolvedTokens > 0
+      // 每行的 token 归集：同步请求显示 input+output；异步任务若存在提交行则
+      // 显示在提交行（调整行不重复），历史日志（无匹配提交行）则在实际携带
+      // total_tokens 的退款/补扣行显示。
+      const { value: resolvedTokens, isTaskTotal } = rowTokenInfo(
+        log,
+        taskTokens,
+        submissionIds
+      )
       // 退款记录显示负号，使明细金额可直接与"消费减退款"的累计消费核对。
       const amount =
         log.type === BILLING_LOG_TYPES.REFUND ? -log.quota : log.quota
@@ -145,7 +137,7 @@ export function BillingTable(props: BillingTableProps) {
             </Badge>
           </TableCell>
           <TableCell className='text-right tabular-nums'>
-            {isAsyncTaskTokens ? (
+            {isTaskTotal ? (
               <div className='flex flex-col items-end gap-0.5'>
                 <span className='font-mono text-xs font-medium tabular-nums'>
                   {formatTokenCount(resolvedTokens)}
@@ -182,7 +174,7 @@ export function BillingTable(props: BillingTableProps) {
         </TableRow>
       )
     })
-  }, [loading, logs, pageRows, t])
+  }, [loading, logs, pageRows, submissionIds, taskTokens, t])
 
   return (
     <Card className='shadow-none'>

@@ -21,7 +21,9 @@ For commercial licensing, please contact support@quantumnous.com
  */
 import type { StatusVariant } from '@/components/status-badge'
 import type { UsageLog } from '@/features/usage-logs/data/schema'
-import { parseLogOther } from '@/features/usage-logs/lib'
+// 直接引用具体模块而非 barrel，避免把整个 usage-logs 特性（含 React 组件）拖入
+// 仅做纯逻辑聚合的 billing 工具链，也便于单元测试。
+import { parseLogOther } from '@/features/usage-logs/lib/format'
 import { formatTimestampToDate } from '@/lib/format'
 
 import { BILLING_LOG_TYPES } from '../types'
@@ -142,43 +144,108 @@ export function taskTotalTokensByTaskId(logs: UsageLog[]): Map<string, number> {
 }
 
 /**
- * Effective token contribution of a single billable log, as a single total.
+ * Total tokens across the whole log set.
  *
- * Aggregation rules:
- *  - Real request logs (consume / error) are the only source of tokens.
- *  - For sync requests: prompt_tokens + completion_tokens.
- *  - For async tasks: the submission consume log has prompt/completion = 0 and
- *    no `total_tokens`; its real token count lives on the settlement log. We
- *    resolve it through `taskTokens` (built from the same log set) by matching
- *    `other.task_id`. Adjustment logs (补扣/退款) themselves carry
- *    `pre_consumed_quota` and are excluded by `isRealRequest`, so they never
- *    contribute here — the token is attributed once via the submission log.
- *  - For 错误 (type=5) logs that happen to also be an async task, prefer the
- *    task total if known; otherwise fall back to prompt+completion.
+ * Async task totals (other.total_tokens) are the authoritative token source for
+ * a task and can live on a settlement/adjustment log (退款/补扣) that does not
+ * itself represent a new request — and, for historical logs, may have no
+ * matching submission log with the same task_id in the set at all. So we do NOT
+ * require finding a submission log: we collect every `task_id → total_tokens`
+ * across all billable logs, deduplicate by task_id, and count each task once.
+ *
+ * Algorithm:
+ *  1. Real request logs (sync consume / error): sum prompt + completion.
+ *     If a real request log also carries a task_id that is covered by the task
+ *     map (e.g. a submission log that was backfilled with total_tokens), skip
+ *     it here — its full task total is counted once via the map, so it never
+ *     double counts via the ordinary token fields.
+ *  2. Async task totals: each entry in the deduplicated task map is summed
+ *     exactly once, even when both a 补扣 and a 退款 log carry the same
+ *     task_id + total_tokens.
  */
-export function effectiveTokens(
-  log: UsageLog,
-  taskTokens?: Map<string, number>
-): number {
-  if (!isRealRequest(log)) return 0
-  const input = log.prompt_tokens || 0
-  const output = log.completion_tokens || 0
-  if (input > 0 || output > 0) return input + output
-  const other = parseLogOther(log.other)
-  // Async-task submission consume log (is_task=true, no prompt/completion):
-  // pull the settled total from the task id map.
-  if (other?.task_id && taskTokens?.has(other.task_id)) {
-    return taskTokens.get(other.task_id)!
-  }
-  // Fallback: an adjustment log that somehow still passes isRealRequest
-  // (shouldn't happen, but be defensive).
-  if (other?.total_tokens) return other.total_tokens
-  return 0
-}
-
 export function sumTokens(logs: UsageLog[]): number {
   const taskTokens = taskTotalTokensByTaskId(logs)
-  return logs.reduce((sum, log) => sum + effectiveTokens(log, taskTokens), 0)
+
+  let total = 0
+
+  for (const log of logs) {
+    if (!isRealRequest(log)) continue
+    const other = parseLogOther(log.other)
+    // A submission log whose task total is already accounted for by the map
+    // (backfilled total_tokens) must not also contribute its token fields.
+    if (other?.task_id && taskTokens.has(other.task_id)) continue
+    total += (log.prompt_tokens || 0) + (log.completion_tokens || 0)
+  }
+
+  for (const value of taskTokens.values()) {
+    total += value
+  }
+
+  return total
+}
+
+// ============================================================================
+// Per-row token resolution (table display)
+// ============================================================================
+
+export interface RowTokenInfo {
+  /** Effective token count to render for the row. */
+  value: number
+  /** Whether the value is an async task's single upstream total (no in/out split). */
+  isTaskTotal: boolean
+}
+
+/**
+ * Collect the task_ids of actual async task submissions (is_task=true and not
+ * a 差额补扣 adjustment). A submission row that matches one of these ids is the
+ * canonical place to render that task's total tokens, so sibling adjustment
+ * rows (退款/补扣) for the same task_id do not repeat the number.
+ */
+export function submissionTaskIds(logs: UsageLog[]): Set<string> {
+  const ids = new Set<string>()
+  for (const log of logs) {
+    const other = parseLogOther(log.other)
+    if (other?.is_task && !other.pre_consumed_quota && other.task_id) {
+      ids.add(other.task_id)
+    }
+  }
+  return ids
+}
+
+/**
+ * Resolve the token count shown for a single billing row.
+ *
+ * Order of precedence:
+ *  - prompt/completion are non-zero → their sum (sync requests).
+ *  - A submission row whose task_id hits the token map → the task total.
+ *  - An adjustment row (退款/补扣) that carries `total_tokens` and whose
+ *    task_id has no matching submission row in the set → the task total
+ *    (historical logs where the submission lost its task_id or is filtered out).
+ *  - A matching submission exists → adjustment row renders 0 (no repeat).
+ */
+export function rowTokenInfo(
+  log: UsageLog,
+  taskTokens: Map<string, number>,
+  submissionIds: Set<string>
+): RowTokenInfo {
+  const input = log.prompt_tokens || 0
+  const output = log.completion_tokens || 0
+  if (input > 0 || output > 0) {
+    return { value: input + output, isTaskTotal: false }
+  }
+  const other = parseLogOther(log.other)
+  const taskId = other?.task_id
+  const isSubmissionRow = !!other?.is_task && !other?.pre_consumed_quota
+  // 提交行：is_task 且非补扣调整，其 task_id 命中任务 map → 显示任务总 token。
+  if (taskId && isSubmissionRow && taskTokens.has(taskId)) {
+    return { value: taskTokens.get(taskId) ?? 0, isTaskTotal: true }
+  }
+  // 调整行（退款/补扣）：携带 total_tokens 且集合内没有可匹配的提交行 →
+  // 直接显示该任务的 total（兼容历史日志：提交行无 task_id 或已不在当前集合）。
+  if (taskId && other?.total_tokens && !submissionIds.has(taskId)) {
+    return { value: other.total_tokens, isTaskTotal: true }
+  }
+  return { value: 0, isTaskTotal: false }
 }
 
 // ============================================================================
