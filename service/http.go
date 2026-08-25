@@ -23,11 +23,31 @@ func CloseResponseBodyGracefully(httpResponse *http.Response) {
 	}
 }
 
+// upstreamResponseHeaderAllowlist contains the upstream response headers that
+// are safe and useful to expose to clients. Keep this as an allowlist: upstream
+// relays and CDNs can add arbitrary identifying headers, so a denylist will
+// inevitably miss new or vendor-specific names.
+var upstreamResponseHeaderAllowlist = map[string]struct{}{
+	"accept-ranges":        {},
+	"cache-control":        {},
+	"content-disposition":  {},
+	"content-encoding":     {},
+	"content-language":     {},
+	"content-range":        {},
+	"content-type":         {},
+	"etag":                 {},
+	"expires":              {},
+	"last-modified":        {},
+	"retry-after":          {},
+	"x-codex-turn-state":   {},
+	"x-reasoning-included": {},
+}
+
 // ShouldCopyUpstreamHeader checks whether a given upstream response header
-// should be copied to the client response. It returns false for Content-Length
-// (managed separately) and X-Oneapi-Request-Id (to preserve the local instance
-// ID). When the upstream header is X-Oneapi-Request-Id, the value is captured
-// into the Gin context for later logging.
+// should be copied to the client response. Content-Length is managed locally,
+// and X-Oneapi-Request-Id is captured only for server-side logging so the local
+// request ID remains authoritative. Every other header must be explicitly
+// allowlisted above to prevent upstream relay/CDN fingerprints from leaking.
 func ShouldCopyUpstreamHeader(c *gin.Context, k string, v []string) bool {
 	if strings.EqualFold(k, "Content-Length") {
 		return false
@@ -38,7 +58,8 @@ func ShouldCopyUpstreamHeader(c *gin.Context, k string, v []string) bool {
 		}
 		return false
 	}
-	return true
+	_, ok := upstreamResponseHeaderAllowlist[strings.ToLower(strings.TrimSpace(k))]
+	return ok
 }
 
 func IOCopyBytesGracefully(c *gin.Context, src *http.Response, data []byte) {
