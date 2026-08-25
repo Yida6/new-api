@@ -45,6 +45,7 @@ import {
   formatTokenCount,
   getBillingStatus,
   getBillingTypeLabel,
+  taskTotalTokensByTaskId,
 } from '../lib/format'
 import { BILLING_LOG_TYPES, BILLING_PAGE_SIZES, type BillingLog } from '../types'
 
@@ -71,6 +72,13 @@ export function BillingTable(props: BillingTableProps) {
     const start = (safePage - 1) * pageSize
     return logs.slice(start, start + pageSize)
   }, [logs, safePage, pageSize])
+
+  // async 任务的总 token 由调整日志（退款/补扣）的 other.total_tokens 提供，
+  // 通过 task_id 反查到提交消费日志所在的行，保证"任务一次提交对应一次 token 计入"。
+  const taskTokens = useMemo(
+    () => taskTotalTokensByTaskId(logs),
+    [logs]
+  )
 
   const pageNumbers = useMemo(() => {
     const max = 7
@@ -106,13 +114,20 @@ export function BillingTable(props: BillingTableProps) {
       const status = getBillingStatus(log)
       const billingType = getBillingTypeLabel(log)
       const other = parseLogOther(log.other)
-      // 异步任务（Seedance 等）把上游总 token 写入 other.total_tokens，
-      // prompt/completion 恒为 0；总 token 既非输入也非输出，单独展示。
-      const taskTotalTokens = other?.total_tokens || 0
+      // 异步任务的 token 归属于"提交消费日志"（is_task=true，且非补扣/退款
+      // 调整行），由同集合内的退款/补扣日志按 task_id 提供 total_tokens。
+      // 调整行不再二次显示，避免同任务在明细里出现两次。
+      const baseInput = log.prompt_tokens || 0
+      const baseOutput = log.completion_tokens || 0
+      const isSubmissionTask = !!other?.is_task && !other?.pre_consumed_quota
+      const resolvedTokens =
+        baseInput > 0 || baseOutput > 0
+          ? baseInput + baseOutput
+          : isSubmissionTask && other?.task_id
+            ? (taskTokens.get(other.task_id) ?? 0)
+            : 0
       const isAsyncTaskTokens =
-        log.prompt_tokens === 0 &&
-        log.completion_tokens === 0 &&
-        taskTotalTokens > 0
+        baseInput === 0 && baseOutput === 0 && resolvedTokens > 0
       // 退款记录显示负号，使明细金额可直接与"消费减退款"的累计消费核对。
       const amount =
         log.type === BILLING_LOG_TYPES.REFUND ? -log.quota : log.quota
@@ -133,7 +148,7 @@ export function BillingTable(props: BillingTableProps) {
             {isAsyncTaskTokens ? (
               <div className='flex flex-col items-end gap-0.5'>
                 <span className='font-mono text-xs font-medium tabular-nums'>
-                  {formatTokenCount(taskTotalTokens)}
+                  {formatTokenCount(resolvedTokens)}
                 </span>
                 <span className='text-muted-foreground/60 text-[11px]'>
                   {t('Task total tokens')}

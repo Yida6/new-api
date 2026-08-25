@@ -116,32 +116,69 @@ export function getBillingTypeLabel(log: UsageLog): {
 // ============================================================================
 
 /**
+ * Build a map of `task_id → total_tokens` from the billable log set.
+ *
+ * For async tasks (Seedance etc.) the upstream total token count is recorded
+ * on the settlement/adjustment log (退款日志 or 补扣日志) — NOT on the
+ * submission consume log. Both record-task-billing code paths in
+ * service/task_billing.go call `RecordTaskBillingLog` with `TotalTokens`,
+ * which only fires on settlement; the submission consume log keeps its
+ * prompt/completion tokens at 0 and `other` has no `total_tokens`.
+ *
+ * To make the token attributable to the task itself (and not double-counted
+ * across an optional 补扣 + 退款 pair), we deduplicate by `task_id` and keep
+ * the first seen value.
+ */
+export function taskTotalTokensByTaskId(logs: UsageLog[]): Map<string, number> {
+  const map = new Map<string, number>()
+  for (const log of logs) {
+    const other = parseLogOther(log.other)
+    if (!other?.task_id || !other.total_tokens) continue
+    if (!map.has(other.task_id)) {
+      map.set(other.task_id, other.total_tokens)
+    }
+  }
+  return map
+}
+
+/**
  * Effective token contribution of a single billable log, as a single total.
  *
- * Token accounting only reads real request logs: the submission consume log is
- * the single source of token truth for a task. Billing adjustment records
- * (差额补扣/退款, marked by `pre_consumed_quota`) also carry a backfilled
- * `other.total_tokens`, so they must be excluded here to avoid double-counting
- * the same async task's tokens.
- *
- * Async tasks (Seedance etc.) keep prompt/completion tokens at 0 and record
- * their upstream total token count in `other.total_tokens` (see
- * model.RecordTaskBillingLog / BackfillTaskConsumeLogTotalTokens). The total is
- * neither input nor output, so it is surfaced as a single "Tokens" figure
- * rather than being folded into an input/output split.
+ * Aggregation rules:
+ *  - Real request logs (consume / error) are the only source of tokens.
+ *  - For sync requests: prompt_tokens + completion_tokens.
+ *  - For async tasks: the submission consume log has prompt/completion = 0 and
+ *    no `total_tokens`; its real token count lives on the settlement log. We
+ *    resolve it through `taskTokens` (built from the same log set) by matching
+ *    `other.task_id`. Adjustment logs (补扣/退款) themselves carry
+ *    `pre_consumed_quota` and are excluded by `isRealRequest`, so they never
+ *    contribute here — the token is attributed once via the submission log.
+ *  - For 错误 (type=5) logs that happen to also be an async task, prefer the
+ *    task total if known; otherwise fall back to prompt+completion.
  */
-export function effectiveTokens(log: UsageLog): number {
+export function effectiveTokens(
+  log: UsageLog,
+  taskTokens?: Map<string, number>
+): number {
   if (!isRealRequest(log)) return 0
   const input = log.prompt_tokens || 0
   const output = log.completion_tokens || 0
   if (input > 0 || output > 0) return input + output
   const other = parseLogOther(log.other)
+  // Async-task submission consume log (is_task=true, no prompt/completion):
+  // pull the settled total from the task id map.
+  if (other?.task_id && taskTokens?.has(other.task_id)) {
+    return taskTokens.get(other.task_id)!
+  }
+  // Fallback: an adjustment log that somehow still passes isRealRequest
+  // (shouldn't happen, but be defensive).
   if (other?.total_tokens) return other.total_tokens
   return 0
 }
 
 export function sumTokens(logs: UsageLog[]): number {
-  return logs.reduce((sum, log) => sum + effectiveTokens(log), 0)
+  const taskTokens = taskTotalTokensByTaskId(logs)
+  return logs.reduce((sum, log) => sum + effectiveTokens(log, taskTokens), 0)
 }
 
 // ============================================================================
