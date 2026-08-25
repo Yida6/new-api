@@ -234,6 +234,18 @@ func RecalculateTaskQuota(ctx context.Context, task *model.Task, actualQuota int
 	preConsumedQuota := task.Quota
 	quotaDelta := actualQuota - preConsumedQuota
 
+	// 结算拿到上游实际 total_tokens 时，持久化到 task 行，作为数据看板
+	// token_used 的补录数据源（与计费差额完全解耦：补扣/退款/预扣命中都统计）。
+	// 真正累加在后台 ReconcileTaskTokensToQuotaData 完成，幂等且不增加 Count。
+	// 持久化失败必须返回 false（结算可重试），否则任务进入终态后补录器失去数据源，
+	// Token 将永久缺失（P2）。
+	if totalTokens > 0 {
+		if _, err := model.RecordTaskTotalTokensToQuotaData(task, totalTokens); err != nil {
+			logger.LogError(ctx, fmt.Sprintf("任务 %s 持久化 total_tokens 失败，结算转为可重试：%v", task.TaskID, err))
+			return false
+		}
+	}
+
 	if quotaDelta == 0 {
 		logger.LogInfo(ctx, fmt.Sprintf("任务 %s 预扣费准确（%s，%s）",
 			task.TaskID, logger.LogQuota(actualQuota), reason))
@@ -402,6 +414,25 @@ const (
 //  4. 退款/精确方向（delta<=0）同样走统一结算（含 Token 退还与日志），
 //     与补扣路径日志口径一致（recordTaskQuotaAdjustLog）。
 func SettleSeedanceTaskBilling(ctx context.Context, adaptor TaskPollingAdaptor, task *model.Task, taskResult *relaycommon.TaskInfo) SeedanceSettleOutcome {
+	// settleTotalTokens 结算时上游返回的实际 token 总数，写入调整日志
+	// other.total_tokens 供前端 Tokens 列回显（adaptor 分支同样透传，
+	// 上游 usage 有值即记录）。
+	settleTotalTokens := 0
+	if taskResult != nil {
+		settleTotalTokens = taskResult.TotalTokens
+	}
+	// 上游返回 total_tokens 时即持久化到 task 行，作为数据看板 token_used 的
+	// 补录数据源——与计费差额完全解耦：按次计费、固定价格、adaptor 自定义计费
+	// 路径只要拿到 total_tokens 都会统计；真正累加在后台
+	// ReconcileTaskTokensToQuotaData 完成（幂等、不增加 Count）。
+	// 持久化失败必须返回 Retryable，否则任务进入终态后补录器失去数据源（P2）。
+	if settleTotalTokens > 0 {
+		if _, err := model.RecordTaskTotalTokensToQuotaData(task, settleTotalTokens); err != nil {
+			logger.LogError(ctx, fmt.Sprintf("任务 %s Seedance 持久化 total_tokens 失败，结算转为可重试：%v", task.TaskID, err))
+			return SeedanceSettleRetryable
+		}
+	}
+
 	// 0. 按次计费的任务不做差额结算
 	if bc := task.PrivateData.BillingContext; bc != nil && bc.PerCallBilling {
 		return SeedanceSettleSuccess
@@ -411,13 +442,6 @@ func SettleSeedanceTaskBilling(ctx context.Context, adaptor TaskPollingAdaptor, 
 	reason := "seedance adaptor计费调整"
 	actualQuota := int64(0)
 	var clamp *common.QuotaClamp
-	// settleTotalTokens 结算时上游返回的实际 token 总数，写入调整日志
-	// other.total_tokens 供前端 Tokens 列回显（adaptor 分支同样透传，
-	// 上游 usage 有值即记录）。
-	settleTotalTokens := 0
-	if taskResult != nil {
-		settleTotalTokens = taskResult.TotalTokens
-	}
 	if adj := adaptor.AdjustBillingOnComplete(task, taskResult); adj > 0 {
 		actualQuota = adj
 	} else if taskResult != nil && taskResult.TotalTokens > 0 {

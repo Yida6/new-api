@@ -599,6 +599,30 @@ func RecordTaskBillingLog(params RecordTaskBillingLogParams) {
 	}
 }
 
+// findTaskSubmitLog 定位任务的"提交消费日志"（type=consume + other 含 is_task
+// 标记 + task_id 值）。找不到返回 (nil, false)。
+// 刻意不用 `%"task_id":"<id>%"` 整键匹配：glebarez/sqlite（测试环境）对 LIKE
+// pattern 末尾的 `%"` 序列匹配异常（返回 0 行），而 `%"is_task":true%` 与
+// `%<taskID>%` 两个独立 pattern 在各库均正常；提交日志与补扣日志同为
+// LogTypeConsume，is_task 是二者的唯一区分。
+func findTaskSubmitLog(userId int, taskID string) (*Log, bool) {
+	if userId <= 0 || taskID == "" {
+		return nil, false
+	}
+	pattern := "%" + taskID + "%"
+	var target Log
+	err := LOG_DB.Where("user_id = ? AND type = ? AND other LIKE ? AND other LIKE ?",
+		userId, LogTypeConsume, `%"is_task":true%`, pattern).
+		Order("id desc").Limit(1).First(&target).Error
+	if err != nil {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			common.SysError("find task submit log query error: " + err.Error())
+		}
+		return nil, false
+	}
+	return &target, true
+}
+
 // BackfillTaskConsumeLogTotalTokens 任务结算拿到上游实际 total_tokens 后，
 // 回填到该任务"提交消费日志"（type=consume 且 other.task_id 匹配）的
 // other.total_tokens，使消费记录行也能回显总 token —— 异步任务（Seedance
@@ -608,6 +632,8 @@ func RecordTaskBillingLog(params RecordTaskBillingLogParams) {
 // 范围：ClickHouse 日志库不支持 UPDATE，直接跳过；其余日志库（MySQL /
 // SQLite）走通用 read-modify-write，不依赖数据库 JSON 函数。
 // 回填属展示增强，失败不影响账务正确性（返回 false 不向上抛错）。
+// 注：回填只更新日志 other.total_tokens（展示），排行榜统计的
+// quota_data.token_used 由 model.ReconcileTaskTokensToQuotaData 负责幂等累计。
 func BackfillTaskConsumeLogTotalTokens(userId int, taskID string, totalTokens int) bool {
 	if userId <= 0 || taskID == "" || totalTokens <= 0 {
 		return false
@@ -615,20 +641,8 @@ func BackfillTaskConsumeLogTotalTokens(userId int, taskID string, totalTokens in
 	if common.UsingLogDatabase(common.DatabaseTypeClickHouse) {
 		return false
 	}
-	// 定位提交消费日志：type=consume + other 含 is_task 标记 + task_id 值。
-	// 刻意不用 `%"task_id":"<id>%"` 整键匹配：glebarez/sqlite（测试环境）
-	// 对 LIKE pattern 末尾的 `%"` 序列匹配异常（返回 0 行），而
-	// `%"is_task":true%` 与 `%<taskID>%` 两个独立 pattern 在各库均正常；
-	// 提交日志与补扣日志同为 LogTypeConsume，is_task 是二者的唯一区分。
-	pattern := "%" + taskID + "%"
-	var target Log
-	err := LOG_DB.Where("user_id = ? AND type = ? AND other LIKE ? AND other LIKE ?",
-		userId, LogTypeConsume, `%"is_task":true%`, pattern).
-		Order("id desc").Limit(1).First(&target).Error
-	if err != nil {
-		if !errors.Is(err, gorm.ErrRecordNotFound) {
-			common.SysError("backfill task consume log query error: " + err.Error())
-		}
+	target, ok := findTaskSubmitLog(userId, taskID)
+	if !ok {
 		return false
 	}
 	other, _ := common.StrToMap(target.Other)

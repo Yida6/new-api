@@ -713,14 +713,29 @@ func truncateBase64(s string) string {
 //  2. taskResult.TotalTokens > 0 → 按 token 重算
 //  3. 都不满足 → 保持预扣额度不变
 func settleTaskBillingOnComplete(ctx context.Context, adaptor TaskPollingAdaptor, task *model.Task, taskResult *relaycommon.TaskInfo) bool {
+	// 上游返回 total_tokens 时即持久化到 task 行，作为数据看板 token_used 的
+	// 补录数据源（与计费差额解耦：按次计费、固定价格、adaptor 自定义计费路径
+	// 只要拿到 total_tokens 都会统计）。持久化失败返回 false（结算可重试），
+	// 避免任务进入终态后补录器失去数据源、Token 永久缺失（P2）。
+	if taskResult != nil && taskResult.TotalTokens > 0 {
+		if _, err := model.RecordTaskTotalTokensToQuotaData(task, taskResult.TotalTokens); err != nil {
+			logger.LogError(ctx, fmt.Sprintf("任务 %s 持久化 total_tokens 失败，结算转为可重试：%v", task.TaskID, err))
+			return false
+		}
+	}
 	// 0. 按次计费的任务不做差额结算
 	if bc := task.PrivateData.BillingContext; bc != nil && bc.PerCallBilling {
 		logger.LogInfo(ctx, fmt.Sprintf("任务 %s 按次计费，跳过差额结算", task.TaskID))
 		return true
 	}
-	// 1. 优先让 adaptor 决定最终额度
+	// 1. 优先让 adaptor 决定最终额度（透传实际 total_tokens，保证 adaptor
+	//    计费路径下看板 token 也能统计）
 	if actualQuota := adaptor.AdjustBillingOnComplete(task, taskResult); actualQuota > 0 {
-		return RecalculateTaskQuota(ctx, task, actualQuota, "adaptor计费调整", 0)
+		totalTokens := 0
+		if taskResult != nil {
+			totalTokens = taskResult.TotalTokens
+		}
+		return RecalculateTaskQuota(ctx, task, actualQuota, "adaptor计费调整", totalTokens)
 	}
 	// 2. 回退到 token 重算
 	if taskResult.TotalTokens > 0 {

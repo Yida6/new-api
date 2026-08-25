@@ -70,6 +70,20 @@ type Task struct {
 	// 由管理员人工处理（见 CompensatePendingTokenDeltas 问题四注释），
 	// 不得静默清零。
 	TokenDeltaPending int64      `json:"token_delta_pending" gorm:"column:token_delta_pending;type:bigint;default:0;index"`
+	// TotalTokens 任务结算时上游返回的实际 token 总数（Seedance 等异步任务）。
+	// 提交瞬间上游无 usage，仅在结算完成后由 RecordTaskTotalTokensToQuotaData
+	// 写入（durable）。它是 quota_data.token_used 补录的数据源：后台
+	// ReconcileTaskTokensToQuotaData 按"total_tokens > 0 且 total_tokens 大于已同步值"
+	// 扫描并落库。仅展示用，不参与任何计费/额度计算。
+	TotalTokens int `json:"total_tokens" gorm:"column:total_tokens;type:int;default:0"`
+	// TokenQuotaSynced 该任务已同步进 quota_data.token_used（排行榜数据源）的
+	// token 值。幂等同步采用"值差额"语义：ReconcileTaskTokensToQuotaData 只把
+	// (TotalTokens - TokenQuotaSynced) 的差额累计进对应小时桶，并把
+	// TokenQuotaSynced 更新为 TotalTokens。这样可区分三种状态：从未同步（0）、
+	// 已同步同值（差额=0，跳过）、已同步旧值待追加差额（TotalTokens > 已同步值）。
+	// 重复结算 / 重复轮询 / 服务重启不会重复累计；旧值更正为新值只追加差额。
+	// 在"写 quota_data + 置位"同一事务内完成（见 reconcileTaskToken）。
+	TokenQuotaSynced int `json:"-" gorm:"column:token_quota_synced;type:int;default:0"`
 	SubmitTime        int64      `json:"submit_time" gorm:"index"`
 	StartTime         int64      `json:"start_time" gorm:"index"`
 	FinishTime        int64      `json:"finish_time" gorm:"index"`
