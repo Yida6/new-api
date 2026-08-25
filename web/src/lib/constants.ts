@@ -21,7 +21,7 @@ For commercial licensing, please contact support@quantumnous.com
  */
 
 // System Configuration Defaults
-export const DEFAULT_SYSTEM_NAME = 'JadeRoute'
+export const DEFAULT_SYSTEM_NAME = 'global API'
 export const DEFAULT_LOGO = '/brand/jaderoute-mark.svg'
 
 // LocalStorage Keys
